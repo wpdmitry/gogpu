@@ -10,13 +10,29 @@ import (
 
 const defaultTitle = "GoGPU Application"
 
-// Environment variable values for GOGPU_GRAPHICS_API.
+// Environment variable values for GOGPU_GRAPHICS_API and GOGPU_RENDER_MODE.
 const (
 	envVulkan   = "vulkan"
 	envDX12     = "dx12"
 	envMetal    = "metal"
 	envGLES     = "gles"
 	envSoftware = "software"
+	envCPU      = "cpu"
+	envGPU      = "gpu"
+)
+
+// RenderMode controls the 2D rendering path selection (ADR-020).
+// This determines whether gg uses GPU accelerator or CPU rasterizer.
+type RenderMode int
+
+const (
+	// RenderModeAuto selects rendering path based on adapter type.
+	// Software adapter → CPU rasterizer (fast), real GPU → GPU accelerator.
+	RenderModeAuto RenderMode = iota
+	// RenderModeCPU forces CPU rasterizer even with a real GPU (for benchmarking).
+	RenderModeCPU
+	// RenderModeGPU forces GPU path even on software adapter (for shader testing).
+	RenderModeGPU
 )
 
 // Config configures the application.
@@ -65,6 +81,11 @@ type Config struct {
 	// PowerPreferenceNone (default) lets the driver decide.
 	PowerPreference gputypes.PowerPreference
 
+	// RenderMode controls 2D rendering path selection (ADR-020).
+	// RenderModeAuto (default): CPU rasterizer on software adapter, GPU on real hardware.
+	// Can be overridden via GOGPU_RENDER_MODE=auto|cpu|gpu environment variable.
+	RenderMode RenderMode
+
 	// TabbingMode controls macOS system window tabbing.
 	// Default: TabbingDisallowed (set by DefaultConfig — GLFW/SDL3/Qt6 enterprise pattern).
 	// Set TabbingPreferred + TabbingIdentifier for terminal-style tabbing.
@@ -96,7 +117,13 @@ type Config struct {
 //	GOGPU_POWER_PREFERENCE=low  — prefer integrated GPU (power saving)
 //	GOGPU_POWER_PREFERENCE=high — prefer discrete GPU (performance)
 //
-// WithGraphicsAPI() and WithPowerPreference() in code take precedence
+// The 2D render mode can be overridden via the GOGPU_RENDER_MODE environment variable:
+//
+//	GOGPU_RENDER_MODE=auto — CPU rasterizer on software adapter, GPU on real hardware (default)
+//	GOGPU_RENDER_MODE=cpu  — force CPU rasterizer (for benchmarking)
+//	GOGPU_RENDER_MODE=gpu  — force GPU path even on software (for shader testing)
+//
+// WithGraphicsAPI(), WithPowerPreference(), and WithRenderMode() in code take precedence
 // over the environment variables.
 func DefaultConfig() Config {
 	return Config{
@@ -108,6 +135,7 @@ func DefaultConfig() Config {
 		ContinuousRender: true,
 		GraphicsAPI:      graphicsAPIFromEnv(),
 		PowerPreference:  powerPreferenceFromEnv(),
+		RenderMode:       renderModeFromEnv(),
 		TabbingMode:      TabbingDisallowed,
 	}
 }
@@ -124,7 +152,7 @@ func graphicsAPIFromEnv() types.GraphicsAPI {
 		return types.GraphicsAPIMetal
 	case envGLES, "gl", "opengl":
 		return types.GraphicsAPIGLES
-	case envSoftware, "sw", "cpu":
+	case envSoftware, "sw", envCPU:
 		return types.GraphicsAPISoftware
 	default:
 		return types.GraphicsAPIAuto
@@ -140,6 +168,18 @@ func powerPreferenceFromEnv() gputypes.PowerPreference {
 		return gputypes.PowerPreferenceHighPerformance
 	default:
 		return gputypes.PowerPreferenceNone
+	}
+}
+
+// renderModeFromEnv reads GOGPU_RENDER_MODE environment variable.
+func renderModeFromEnv() RenderMode {
+	switch strings.ToLower(os.Getenv("GOGPU_RENDER_MODE")) {
+	case envCPU:
+		return RenderModeCPU
+	case envGPU:
+		return RenderModeGPU
+	default:
+		return RenderModeAuto
 	}
 }
 
@@ -216,6 +256,14 @@ func (c Config) WithFrameless(frameless bool) Config {
 // Use gputypes.PowerPreferenceNone (default) to let the driver decide.
 func (c Config) WithPowerPreference(pref gputypes.PowerPreference) Config {
 	c.PowerPreference = pref
+	return c
+}
+
+// WithRenderMode sets the 2D rendering path (ADR-020).
+// RenderModeAuto: CPU on software adapter, GPU on real hardware.
+// RenderModeCPU: force CPU rasterizer. RenderModeGPU: force GPU path.
+func (c Config) WithRenderMode(mode RenderMode) Config {
+	c.RenderMode = mode
 	return c
 }
 
