@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/gogpu/gogpu/input"
+	"github.com/gogpu/gogpu/internal/platform"
 	"github.com/gogpu/gpucontext"
 )
 
@@ -337,12 +338,14 @@ func TestGpucontextKeyToInputKey(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := gpucontextKeyToInputKey(tt.input)
-			if got != tt.output {
-				t.Errorf("gpucontextKeyToInputKey(%v) = %v, want %v", tt.input, got, tt.output)
-			}
-		})
+		t.Run(
+			tt.name, func(t *testing.T) {
+				got := gpucontextKeyToInputKey(tt.input)
+				if got != tt.output {
+					t.Errorf("gpucontextKeyToInputKey(%v) = %v, want %v", tt.input, got, tt.output)
+				}
+			},
+		)
 	}
 }
 
@@ -361,12 +364,14 @@ func TestGpucontextButtonToInputButton(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := gpucontextButtonToInputButton(tt.input)
-			if got != tt.output {
-				t.Errorf("gpucontextButtonToInputButton(%v) = %v, want %v", tt.input, got, tt.output)
-			}
-		})
+		t.Run(
+			tt.name, func(t *testing.T) {
+				got := gpucontextButtonToInputButton(tt.input)
+				if got != tt.output {
+					t.Errorf("gpucontextButtonToInputButton(%v) = %v, want %v", tt.input, got, tt.output)
+				}
+			},
+		)
 	}
 }
 
@@ -442,13 +447,15 @@ func TestAppUpdateMouseStateFromPointer(t *testing.T) {
 	app.inputState = input.New()
 
 	// Mouse press
-	app.updateMouseStateFromPointer(gpucontext.PointerEvent{
-		Type:        gpucontext.PointerDown,
-		PointerType: gpucontext.PointerTypeMouse,
-		Button:      gpucontext.ButtonLeft,
-		X:           100,
-		Y:           200,
-	})
+	app.updateMouseStateFromPointer(
+		gpucontext.PointerEvent{
+			Type:        gpucontext.PointerDown,
+			PointerType: gpucontext.PointerTypeMouse,
+			Button:      gpucontext.ButtonLeft,
+			X:           100,
+			Y:           200,
+		},
+	)
 
 	mx, my := app.inputState.Mouse().Position()
 	if mx != 100 || my != 200 {
@@ -456,13 +463,15 @@ func TestAppUpdateMouseStateFromPointer(t *testing.T) {
 	}
 
 	// Mouse release
-	app.updateMouseStateFromPointer(gpucontext.PointerEvent{
-		Type:        gpucontext.PointerUp,
-		PointerType: gpucontext.PointerTypeMouse,
-		Button:      gpucontext.ButtonLeft,
-		X:           110,
-		Y:           210,
-	})
+	app.updateMouseStateFromPointer(
+		gpucontext.PointerEvent{
+			Type:        gpucontext.PointerUp,
+			PointerType: gpucontext.PointerTypeMouse,
+			Button:      gpucontext.ButtonLeft,
+			X:           110,
+			Y:           210,
+		},
+	)
 
 	mx, my = app.inputState.Mouse().Position()
 	if mx != 110 || my != 210 {
@@ -475,11 +484,13 @@ func TestAppUpdateMouseStateNilInputState(t *testing.T) {
 	app.inputState = nil
 
 	// Should not panic
-	app.updateMouseStateFromPointer(gpucontext.PointerEvent{
-		Type:        gpucontext.PointerDown,
-		PointerType: gpucontext.PointerTypeMouse,
-		Button:      gpucontext.ButtonLeft,
-	})
+	app.updateMouseStateFromPointer(
+		gpucontext.PointerEvent{
+			Type:        gpucontext.PointerDown,
+			PointerType: gpucontext.PointerTypeMouse,
+			Button:      gpucontext.ButtonLeft,
+		},
+	)
 }
 
 func TestAppUpdateMouseStateNonMouse(t *testing.T) {
@@ -487,13 +498,15 @@ func TestAppUpdateMouseStateNonMouse(t *testing.T) {
 	app.inputState = input.New()
 
 	// Touch events should update position but not button state
-	app.updateMouseStateFromPointer(gpucontext.PointerEvent{
-		Type:        gpucontext.PointerDown,
-		PointerType: gpucontext.PointerTypeTouch,
-		Button:      gpucontext.ButtonLeft,
-		X:           50,
-		Y:           60,
-	})
+	app.updateMouseStateFromPointer(
+		gpucontext.PointerEvent{
+			Type:        gpucontext.PointerDown,
+			PointerType: gpucontext.PointerTypeTouch,
+			Button:      gpucontext.ButtonLeft,
+			X:           50,
+			Y:           60,
+		},
+	)
 
 	mx, my := app.inputState.Mouse().Position()
 	if mx != 50 || my != 60 {
@@ -506,13 +519,15 @@ func TestAppUpdateMouseStateInvalidButton(t *testing.T) {
 	app.inputState = input.New()
 
 	// Invalid button should not panic
-	app.updateMouseStateFromPointer(gpucontext.PointerEvent{
-		Type:        gpucontext.PointerDown,
-		PointerType: gpucontext.PointerTypeMouse,
-		Button:      gpucontext.Button(99),
-		X:           10,
-		Y:           20,
-	})
+	app.updateMouseStateFromPointer(
+		gpucontext.PointerEvent{
+			Type:        gpucontext.PointerDown,
+			PointerType: gpucontext.PointerTypeMouse,
+			Button:      gpucontext.Button(99),
+			X:           10,
+			Y:           20,
+		},
+	)
 }
 
 func TestAppUpdateMouseStatePointerMove(t *testing.T) {
@@ -520,15 +535,335 @@ func TestAppUpdateMouseStatePointerMove(t *testing.T) {
 	app.inputState = input.New()
 
 	// Pointer move should update position
-	app.updateMouseStateFromPointer(gpucontext.PointerEvent{
-		Type:        gpucontext.PointerMove,
-		PointerType: gpucontext.PointerTypeMouse,
-		X:           300,
-		Y:           400,
-	})
+	app.updateMouseStateFromPointer(
+		gpucontext.PointerEvent{
+			Type:        gpucontext.PointerMove,
+			PointerType: gpucontext.PointerTypeMouse,
+			X:           300,
+			Y:           400,
+		},
+	)
 
 	mx, my := app.inputState.Mouse().Position()
 	if mx != 300 || my != 400 {
 		t.Errorf("Mouse position = (%f, %f), want (300, 400)", mx, my)
+	}
+}
+
+type mockRenderLoop struct{}
+
+func (m *mockRenderLoop) RunOnRenderThreadVoid(fn func())              { fn() }
+func (m *mockRenderLoop) Stop()                                        {}
+func (m *mockRenderLoop) RequestResize(w, h uint32)                    {}
+func (m *mockRenderLoop) ConsumePendingResize() (uint32, uint32, bool) { return 0, 0, false }
+
+func TestApp_CloseSecondaryWindowRecyclesID(t *testing.T) {
+	app := &App{
+		windowManager: newWindowManager(),
+		primaryWindow: nil,
+		renderLoop:    &mockRenderLoop{},
+	}
+	secID := app.windowManager.allocate()
+	sec := &Window{
+		id:         secID,
+		platformID: platform.NewWindowID(),
+		visible:    true,
+	}
+	app.windowManager.add(sec)
+
+	app.closeSecondaryWindow(secID)
+
+	if app.windowManager.get(secID) != nil {
+		t.Fatal("secondary window should be removed from manager")
+	}
+	reusedID := app.windowManager.allocate()
+	if reusedID != secID {
+		t.Errorf("expected recycled ID %d, got %d", secID, reusedID)
+	}
+}
+
+func TestApp_OnAnyWindowClosed_Chaining(t *testing.T) {
+	app := NewApp(DefaultConfig())
+	if app.OnAnyWindowClosed(func(id WindowID) {}) != app {
+		t.Error("should return *App for chaining")
+	}
+	if app.onAnyWindowClosed == nil {
+		t.Error("callback not set")
+	}
+}
+
+func TestApp_OnAnyWindowClosed_Primary(t *testing.T) {
+	app := &App{
+		windowManager: newWindowManager(),
+		renderLoop:    &mockRenderLoop{},
+	}
+	pid := platform.NewWindowID()
+	app.primaryWindow = &Window{
+		id:         app.windowManager.allocate(),
+		platformID: pid,
+		visible:    true,
+	}
+	app.windowManager.add(app.primaryWindow)
+
+	var closedID WindowID
+	app.OnAnyWindowClosed(func(id WindowID) { closedID = id })
+
+	app.classifyEvent(
+		&platform.Event{
+			Type:     platform.EventClose,
+			WindowID: pid,
+		}, nil, nil,
+	)
+
+	if app.running {
+		t.Error("app should be stopped after primary close")
+	}
+	if closedID != app.primaryWindow.id {
+		t.Errorf("got ID %d, want %d", closedID, app.primaryWindow.id)
+	}
+}
+
+func TestApp_OnAnyWindowClosed_PrimaryRejected(t *testing.T) {
+	app := &App{
+		windowManager: newWindowManager(),
+		renderLoop:    &mockRenderLoop{},
+		running:       true,
+	}
+	pid := platform.NewWindowID()
+	app.primaryWindow = &Window{
+		id:         app.windowManager.allocate(),
+		platformID: pid,
+		visible:    true,
+	}
+	app.primaryWindow.SetOnClose(func() bool { return false })
+	app.windowManager.add(app.primaryWindow)
+
+	called := false
+	app.OnAnyWindowClosed(func(id WindowID) { called = true })
+
+	app.classifyEvent(
+		&platform.Event{
+			Type:     platform.EventClose,
+			WindowID: pid,
+		}, nil, nil,
+	)
+
+	if called {
+		t.Error("should not be called when onClose rejects")
+	}
+	if !app.running {
+		t.Error("app should still be running")
+	}
+}
+
+func TestApp_OnAnyWindowClosed_Secondary(t *testing.T) {
+	app := &App{
+		windowManager: newWindowManager(),
+		primaryWindow: nil,
+		renderLoop:    &mockRenderLoop{},
+	}
+	id := app.windowManager.allocate()
+	w := &Window{
+		id:         id,
+		platformID: platform.NewWindowID(),
+		visible:    true,
+	}
+	app.windowManager.add(w)
+
+	var closedID WindowID
+	app.OnAnyWindowClosed(func(id WindowID) { closedID = id })
+
+	app.closeSecondaryWindow(id)
+
+	if closedID != id {
+		t.Errorf("got ID %d, want %d", closedID, id)
+	}
+	if app.windowManager.get(id) != nil {
+		t.Error("window should be removed")
+	}
+}
+
+func TestApp_OnAnyWindowClosed_SecondaryRejected(t *testing.T) {
+	app := &App{
+		windowManager: newWindowManager(),
+		primaryWindow: nil,
+		renderLoop:    &mockRenderLoop{},
+	}
+	id := app.windowManager.allocate()
+	w := &Window{
+		id:         id,
+		platformID: platform.NewWindowID(),
+		visible:    true,
+	}
+	w.SetOnClose(func() bool { return false })
+	app.windowManager.add(w)
+
+	called := false
+	app.OnAnyWindowClosed(func(id WindowID) { called = true })
+
+	app.classifyEvent(
+		&platform.Event{
+			Type:     platform.EventClose,
+			WindowID: w.platformID,
+		}, nil, nil,
+	)
+
+	if called {
+		t.Error("should not be called when onClose rejects")
+	}
+	if app.windowManager.get(id) == nil {
+		t.Error("window should still be present")
+	}
+}
+
+func TestApp_FocusEvent_SetsFocusedWindow(t *testing.T) {
+	app := &App{
+		windowManager: newWindowManager(),
+		renderLoop:    &mockRenderLoop{},
+	}
+
+	platformID := platform.NewWindowID()
+	internalID := app.windowManager.allocate()
+	w := &Window{id: internalID, platformID: platformID, visible: true}
+	app.windowManager.add(w)
+
+	app.classifyEvent(
+		&platform.Event{
+			Type:     platform.EventFocus,
+			WindowID: platformID,
+			Focused:  true,
+		}, nil, nil,
+	)
+
+	if app.windowManager.focused != internalID {
+		t.Errorf("focused = %d, want %d", app.windowManager.focused, internalID)
+	}
+}
+
+func TestApp_HandleSecondaryResize_NilWindow(t *testing.T) {
+	app := &App{
+		windowManager: newWindowManager(),
+		renderLoop:    &mockRenderLoop{},
+		invalidator:   newInvalidator(nil),
+	}
+
+	app.handleSecondaryResize(
+		platform.Event{
+			Type:     platform.EventResize,
+			WindowID: platform.NewWindowID(),
+			Width:    100, Height: 200,
+		},
+	)
+}
+
+func TestApp_HandleSecondaryResize_NoPhysicalResize(t *testing.T) {
+	app := &App{
+		windowManager: newWindowManager(),
+		renderLoop:    &mockRenderLoop{},
+		invalidator:   newInvalidator(nil),
+	}
+	platformID := platform.NewWindowID()
+	internalID := app.windowManager.allocate()
+	surface := &windowSurface{width: 10, height: 10}
+	w := &Window{id: internalID, platformID: platformID, surface: surface, visible: true}
+	app.windowManager.add(w)
+
+	var resizeCalled bool
+	var newW, newH int
+	w.SetOnResize(func(w, h int) { resizeCalled = true; newW, newH = w, h })
+
+	app.handleSecondaryResize(platform.Event{
+		Type:     platform.EventResize,
+		WindowID: platformID,
+		Width:    320, Height: 240,
+		PhysicalWidth:  0,
+		PhysicalHeight: 0,
+	})
+
+	if !resizeCalled {
+		t.Error("onResize callback should have been called")
+	}
+	if newW != 320 || newH != 240 {
+		t.Errorf("resize dimensions = (%d,%d), want (320,240)", newW, newH)
+	}
+	if !app.invalidator.Consume() {
+		t.Error("expected redraw request after secondary resize")
+	}
+}
+
+func TestApp_PrimaryWindow_IDs(t *testing.T) {
+	app := &App{windowManager: newWindowManager()}
+
+	internalID := app.windowManager.allocate()
+	platformID := platform.NewWindowID()
+	app.primaryWindow = &Window{
+		id:         internalID,
+		platformID: platformID,
+		visible:    true,
+	}
+	app.windowManager.add(app.primaryWindow)
+
+	if app.primaryWindow.id != internalID {
+		t.Error("primaryWindow.id should be internalID")
+	}
+	if app.primaryWindow.platformID != platformID {
+		t.Error("primaryWindow.platformID should be platformID")
+	}
+	if app.PrimaryWindow() != app.primaryWindow {
+		t.Error("PrimaryWindow() should return primaryWindow")
+	}
+}
+
+func TestApp_ProcessEvents_SecondaryResizeCycle(t *testing.T) {
+	app := &App{
+		windowManager: newWindowManager(),
+		renderLoop:    &mockRenderLoop{},
+		invalidator:   newInvalidator(nil),
+	}
+
+	platformID := platform.NewWindowID()
+	internalID := app.windowManager.allocate()
+	surface := &windowSurface{width: 10, height: 10}
+	w := &Window{
+		id:         internalID,
+		platformID: platformID,
+		surface:    surface,
+		visible:    true,
+	}
+	app.windowManager.add(w)
+
+	var resizeCalled bool
+	var resizeW, resizeH int
+	w.SetOnResize(func(w, h int) {
+		resizeCalled = true
+		resizeW, resizeH = w, h
+	})
+
+	primaryEv := platform.Event{Type: platform.EventResize, WindowID: 0, Width: 1024, Height: 768}
+	secondaryEv := platform.Event{
+		Type:           platform.EventResize,
+		WindowID:       platformID,
+		Width:          400,
+		Height:         300,
+		PhysicalWidth:  0,
+		PhysicalHeight: 0,
+	}
+
+	var secResizes []platform.Event
+	_, secResizes = app.classifyEvent(&primaryEv, nil, secResizes)
+	_, secResizes = app.classifyEvent(&secondaryEv, nil, secResizes)
+
+	for i := range secResizes {
+		app.handleSecondaryResize(secResizes[i])
+	}
+
+	if !resizeCalled {
+		t.Error("secondary window onResize should have been called")
+	}
+	if resizeW != 400 || resizeH != 300 {
+		t.Errorf("resize dimensions = (%d,%d), want (400,300)", resizeW, resizeH)
+	}
+	if !app.invalidator.Consume() {
+		t.Error("expected redraw request after secondary resize")
 	}
 }
