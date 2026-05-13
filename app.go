@@ -28,10 +28,11 @@ type appRenderLoop interface {
 // This separation ensures the window stays responsive during heavy GPU
 // operations like swapchain recreation.
 type App struct {
-	config     Config
-	manager    platform.PlatformManager // process-level (multi-window)
-	platWindow platform.PlatformWindow  // primary window (per-window ops)
-	renderer   *Renderer
+	config            Config
+	manager           platform.PlatformManager // process-level (multi-window)
+	platWindow        platform.PlatformWindow  // primary window (per-window ops)
+	renderer          *Renderer
+	primaryPlatformID platform.WindowID
 
 	// Multi-thread rendering
 	renderLoop appRenderLoop
@@ -85,6 +86,7 @@ func (a *App) OnDraw(fn func(*Context)) *App {
 	if a.primaryWindow != nil {
 		a.primaryWindow.onDraw = fn
 	}
+
 	return a
 }
 
@@ -230,7 +232,9 @@ func (a *App) Run() error {
 	// Initialize renderer on render thread (all GPU operations must be on same thread)
 	var initErr error
 	a.renderLoop.RunOnRenderThreadVoid(func() {
-		a.renderer, initErr = newRenderer(a.platWindow, a.config.Backend, a.config.GraphicsAPI, a.config.VSync, a.config.PowerPreference)
+		a.renderer, initErr = newRenderer(
+			a.platWindow, a.config.Backend, a.config.GraphicsAPI, a.config.VSync, a.config.PowerPreference,
+		)
 	})
 	if initErr != nil {
 		return initErr
@@ -276,6 +280,7 @@ func (a *App) Run() error {
 		onResize:   a.onResize,
 		visible:    true,
 	}
+	a.primaryPlatformID = platWindow.ID()
 	a.windowManager.add(a.primaryWindow)
 
 	// Main loop with three rendering modes (ADR-023):
@@ -545,28 +550,37 @@ func (a *App) dispatchScrollEvent(event *platform.Event) {
 
 // windowCloseEvent handles CloseEvent from the platform.
 func (a *App) windowCloseEvent(event *platform.Event) {
-	isPrimary := event.WindowID == 0 ||
-		(a.primaryWindow != nil && event.WindowID == a.primaryWindow.platformID)
+	// Primary check
+	isPrimary := a.primaryWindow != nil && event.WindowID == a.primaryPlatformID
 
-	if isPrimary {
-		if a.primaryWindow != nil && a.primaryWindow.onClose != nil && !a.primaryWindow.onClose() {
+	if !isPrimary {
+		w := a.windowManager.getByPlatformID(event.WindowID)
+		if w == nil {
 			return
 		}
-		a.running = false
-		a.windowManager.release(a.primaryWindow.id)
-		if a.onAnyWindowClosed != nil {
-			a.onAnyWindowClosed(a.primaryWindow.id)
+
+		if !w.safeOnClose() {
+			return
 		}
+
+		a.closeSecondaryWindow(w.id)
 		return
 	}
 
-	// Secondary window
-	w := a.windowManager.getByPlatformID(event.WindowID)
-	if w != nil && w.onClose != nil && !w.onClose() {
+	// Primary window — terminate app
+	if a.primaryWindow == nil {
 		return
 	}
-	if w != nil {
-		a.closeSecondaryWindow(w.id)
+
+	if !a.primaryWindow.safeOnClose() {
+		return
+	}
+
+	a.running = false
+	a.windowManager.release(a.primaryWindow.id)
+
+	if a.onAnyWindowClosed != nil {
+		a.onAnyWindowClosed(a.primaryWindow.id)
 	}
 }
 
@@ -879,12 +893,14 @@ func (a *App) IsFrameless() bool {
 // Implements gpucontext.WindowChrome.
 func (a *App) SetHitTestCallback(callback gpucontext.HitTestCallback) {
 	if a.platWindow != nil {
-		a.platWindow.SetHitTestCallback(func(x, y float64) gpucontext.HitTestResult {
-			if callback != nil {
-				return callback(x, y)
-			}
-			return gpucontext.HitTestClient
-		})
+		a.platWindow.SetHitTestCallback(
+			func(x, y float64) gpucontext.HitTestResult {
+				if callback != nil {
+					return callback(x, y)
+				}
+				return gpucontext.HitTestClient
+			},
+		)
 	}
 }
 

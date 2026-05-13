@@ -59,6 +59,7 @@ var selectors struct {
 	center                                   SEL
 	toggleFullScreen                         SEL
 	setCollectionBehavior                    SEL
+	windowShouldClose                        SEL
 
 	// NSView - View management
 	setWantsLayer   SEL
@@ -251,6 +252,7 @@ func initSelectors() {
 		selectors.center = RegisterSelector("center")
 		selectors.toggleFullScreen = RegisterSelector("toggleFullScreen:")
 		selectors.setCollectionBehavior = RegisterSelector("setCollectionBehavior:")
+		selectors.windowShouldClose = RegisterSelector("windowShouldClose:")
 
 		// NSView
 		selectors.setWantsLayer = RegisterSelector("setWantsLayer:")
