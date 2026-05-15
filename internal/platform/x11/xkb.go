@@ -160,10 +160,11 @@ func (c *Connection) xkbSelectEvents(majorOpcode uint8) error {
 	e.PutUint16(XkbUseCoreKbd) // device spec
 	e.PutUint16(XkbStateMask)  // affectWhich: subscribe to state events
 	e.PutUint16(0)             // clear: don't clear any event types
-	e.PutUint16(XkbStateMask)  // selectAll: enable state notifications
+	e.PutUint16(0)             // selectAll: 0 — use per-event details below (not auto-select all)
 	e.PutUint16(0)             // affectMap
 	e.PutUint16(0)             // map
-	// Per-event details for StateNotify:
+	// Per-event details for StateNotify (included because StateNotify is in
+	// affectWhich but NOT in selectAll — XKB wire protocol requires detail pair):
 	e.PutUint16(XkbGroupStateMask) // affectState: we want group changes
 	e.PutUint16(XkbGroupStateMask) // stateDetails: group changes
 
