@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.2] - 2026-05-16
+
+### Fixed
+
+- **HiDPI logical window sizing** (#237, ADR-030, @unxed) -- `WithSize(800,600)` now creates 800x600 LOGICAL window (1600x1200 physical at 2x scale). Scale detected before window creation via Xft.dpi. `LogicalSize()` returns physical/scale. `PhysicalSize()` returns raw X11 geometry. Follows winit/Qt6/GTK4 consensus (5 frameworks researched).
+- **Event queue memory leak** (#238, ADR-031) -- `w.events = w.events[1:]` slice leak on all platforms replaced with generic ring buffer `EventQueue[T]`. Fixed capacity 256, drops oldest on overflow (SDL3 pattern). Zero allocations after init.
+
 ## [0.36.1] - 2026-05-16
 
 ### Fixed

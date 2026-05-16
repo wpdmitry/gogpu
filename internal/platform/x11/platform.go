@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-webgpu/goffi/ffi"
 	"github.com/go-webgpu/goffi/types"
+	"github.com/gogpu/gogpu/internal/platform/eventqueue"
 	xkbcommon "github.com/gogpu/gogpu/internal/platform/xkb"
 	"github.com/gogpu/gpucontext"
 )
@@ -89,15 +90,16 @@ type x11Window struct {
 	// X11 window ID
 	window ResourceID
 
-	// Window state
+	// Window state (guarded by eventMu for thread-safe access from multiple goroutines).
 	width       int
 	height      int
 	shouldClose bool
 	configured  bool
+	eventMu     sync.Mutex // guards window state fields (width, height, shouldClose, configured)
 
-	// Event queue (matches Windows pattern — finite queue, no infinite loops)
-	events  []PlatformEvent
-	eventMu sync.Mutex
+	// Event queue — ring buffer (ADR-031: fixed capacity, zero allocs, drops oldest).
+	// The ring buffer has its own internal mutex — no external lock needed for Push/Pop.
+	events *eventqueue.Queue[PlatformEvent]
 
 	// Mouse state tracking
 	mouseX        float64
@@ -282,11 +284,24 @@ func (p *Platform) Init(config Config) error {
 	}
 	p.atoms = atoms
 
-	// Create window
+	// Detect DPI scale factor BEFORE window creation using Xft.dpi from RESOURCE_MANAGER.
+	// This only needs p.conn (no Xlib). The Xlib-based fallback runs later as refinement.
+	p.scaleFactor = p.queryScaleFactorFromXftDPI()
+
+	// Scale config dimensions from logical (DIP) to physical pixels for X11 window creation.
+	// X11 always works in physical pixels — the window manager does not perform any scaling.
+	physWidth := config.Width
+	physHeight := config.Height
+	if p.scaleFactor > 1.0 {
+		physWidth = int(math.Round(float64(config.Width) * p.scaleFactor))
+		physHeight = int(math.Round(float64(config.Height) * p.scaleFactor))
+	}
+
+	// Create window with physical pixel dimensions
 	windowConfig := WindowConfig{
 		Title:      config.Title,
-		Width:      uint16(config.Width),
-		Height:     uint16(config.Height),
+		Width:      uint16(physWidth),
+		Height:     uint16(physHeight),
 		X:          0,
 		Y:          0,
 		Resizable:  config.Resizable,
@@ -299,14 +314,16 @@ func (p *Platform) Init(config Config) error {
 		return fmt.Errorf("x11: failed to create window: %w", err)
 	}
 
-	// Create per-window state
+	// Create per-window state.
+	// Store physical pixel dimensions (what the X server sees).
 	w := &x11Window{
 		window:        window,
-		width:         config.Width,
-		height:        config.Height,
+		width:         physWidth,
+		height:        physHeight,
 		startTime:     time.Now(),
 		activeTouches: make(map[uint32]bool),
 		frameless:     config.Frameless,
+		events:        eventqueue.New[PlatformEvent](eventqueue.DefaultCapacity),
 	}
 
 	// Set window properties
@@ -432,8 +449,12 @@ func (p *Platform) Init(config Config) error {
 	}
 	p.xlib = xlib
 
-	// Query DPI scale factor from X resources (Xft.dpi) or screen physical size.
-	p.scaleFactor = p.queryScaleFactor()
+	// Refine DPI scale factor using Xlib screen info (fallback for systems without Xft.dpi).
+	// queryScaleFactor re-checks Xft.dpi (fast, same result) then tries screen physical dimensions.
+	refinedScale := p.queryScaleFactor()
+	if refinedScale != p.scaleFactor && refinedScale != 1.0 {
+		p.scaleFactor = refinedScale
+	}
 	if p.scaleFactor != 1.0 {
 		logger().Info("x11 DPI scale", "factor", p.scaleFactor)
 	}
@@ -494,6 +515,48 @@ func (p *Platform) queryScaleFactor() float64 {
 		// so we use a wider dead zone than for Xft.dpi.
 		if scale >= 0.5 && scale <= 8.0 && math.Abs(scale-1.0) > 0.1 {
 			return math.Round(scale*4) / 4 // Round to nearest 0.25
+		}
+	}
+
+	return 1.0
+}
+
+// queryScaleFactorFromXftDPI detects scale factor using ONLY Xft.dpi from
+// the RESOURCE_MANAGER property on the root window. This method requires only
+// p.conn (no Xlib display), so it can be called BEFORE window creation.
+// Returns 1.0 if Xft.dpi is not set or cannot be parsed.
+func (p *Platform) queryScaleFactorFromXftDPI() float64 {
+	if p.conn == nil {
+		return 1.0
+	}
+
+	rootWindow := p.conn.RootWindow()
+	if rootWindow == 0 {
+		return 1.0
+	}
+
+	// RESOURCE_MANAGER is a predefined atom (23). Request type AnyPropertyType (0).
+	data, _, _, err := p.conn.GetProperty(rootWindow, AtomResourceManager, Atom(0), 0, 8192, false)
+	if err == nil && len(data) > 0 {
+		if dpi := parseXftDPI(string(data)); dpi > 0 {
+			scale := dpi / 96.0
+			// Clamp to reasonable range [0.5, 8.0]
+			if scale >= 0.5 && scale <= 8.0 {
+				return scale
+			}
+		}
+	}
+
+	// Also check GDK_SCALE and QT_SCALE_FACTOR environment variables.
+	// These are set by GNOME/KDE and available before any X resource reads.
+	if s := os.Getenv("GDK_SCALE"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			return float64(v)
+		}
+	}
+	if s := os.Getenv("QT_SCALE_FACTOR"); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil && v > 0 && v <= 8.0 {
+			return v
 		}
 	}
 
@@ -614,21 +677,12 @@ func (p *Platform) PollEvents() PlatformEvent {
 // dequeueEvent removes and returns the first event from the queue.
 // Returns false if the queue is empty.
 func (w *x11Window) dequeueEvent() (PlatformEvent, bool) {
-	w.eventMu.Lock()
-	defer w.eventMu.Unlock()
-	if len(w.events) > 0 {
-		event := w.events[0]
-		w.events = w.events[1:]
-		return event, true
-	}
-	return PlatformEvent{}, false
+	return w.events.Pop()
 }
 
-// queueEvent appends a platform event to the window's event queue.
+// queueEvent pushes a platform event to the window's ring buffer queue.
 func (w *x11Window) queueEvent(event PlatformEvent) {
-	w.eventMu.Lock()
-	defer w.eventMu.Unlock()
-	w.events = append(w.events, event)
+	w.events.Push(event)
 }
 
 // QueueEvent is an exported wrapper for queueEvent, used by the platform
@@ -1122,12 +1176,23 @@ func (p *Platform) ShouldClose() bool {
 	return w.shouldClose
 }
 
-// GetSize returns current window size in pixels.
+// GetSize returns current window size in physical pixels (what X11 reports).
 func (p *Platform) GetSize() (width, height int) {
 	w := p.primary
 	w.eventMu.Lock()
 	defer w.eventMu.Unlock()
 	return w.width, w.height
+}
+
+// LogicalSize returns current window size in logical units (DIP).
+// On HiDPI, this divides physical pixels by the scale factor.
+func (p *Platform) LogicalSize() (width, height int) {
+	pw, ph := p.GetSize()
+	scale := p.ScaleFactor()
+	if scale <= 1.0 {
+		return pw, ph
+	}
+	return int(math.Round(float64(pw) / scale)), int(math.Round(float64(ph) / scale))
 }
 
 // GetHandle returns platform-specific handles for Vulkan surface creation.

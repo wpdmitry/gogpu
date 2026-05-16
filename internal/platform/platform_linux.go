@@ -4,6 +4,7 @@ package platform
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/gogpu/gogpu/internal/platform/eventqueue"
 	"github.com/gogpu/gogpu/internal/platform/wayland"
 	"github.com/gogpu/gogpu/internal/platform/x11"
 	"github.com/gogpu/gpucontext"
@@ -40,9 +42,13 @@ type waylandWindow struct {
 	shouldClose bool
 	configured  bool
 
-	// Event queue (same pattern as X11 and Windows platforms)
-	events  []Event
+	// eventMu guards window state fields (shouldClose, maximized, fullscreen,
+	// width, height, savedWidth, savedHeight). The event queue has its own
+	// internal mutex (ring buffer is thread-safe).
 	eventMu sync.Mutex
+
+	// Event queue — ring buffer (ADR-031: fixed capacity, zero allocs, drops oldest).
+	events *eventqueue.Queue[Event]
 
 	savedWidth  int // pre-maximize size for restore
 	savedHeight int
@@ -116,7 +122,10 @@ func newPlatformManager() PlatformManager {
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
 		logger().Info("platform selected", "type", "wayland", "WAYLAND_DISPLAY", os.Getenv("WAYLAND_DISPLAY"))
 		return &waylandPlatform{
-			primary: &waylandWindow{startTime: time.Now()},
+			primary: &waylandWindow{
+				startTime: time.Now(),
+				events:    eventqueue.New[Event](eventqueue.DefaultCapacity),
+			},
 		}
 	}
 	// Fall back to X11 if DISPLAY is set
@@ -128,7 +137,10 @@ func newPlatformManager() PlatformManager {
 	// Default to Wayland (will fail in Init if not available)
 	logger().Info("platform selected", "type", "wayland", "reason", "default (no WAYLAND_DISPLAY or DISPLAY)")
 	return &waylandPlatform{
-		primary: &waylandWindow{startTime: time.Now()},
+		primary: &waylandWindow{
+			startTime: time.Now(),
+			events:    eventqueue.New[Event](eventqueue.DefaultCapacity),
+		},
 	}
 }
 
@@ -166,13 +178,22 @@ func (p *x11Platform) PollEvents() Event {
 	case x11.EventTypeClose:
 		return Event{Type: EventClose, WindowID: p.primaryWindowID}
 	case x11.EventTypeResize:
-		// X11: scale=1.0 baseline, logical == physical
+		// X11 reports physical pixel dimensions. Compute logical size from scale factor.
+		physW := event.Width
+		physH := event.Height
+		scale := p.inner.ScaleFactor()
+		logW := physW
+		logH := physH
+		if scale > 1.0 {
+			logW = int(math.Round(float64(physW) / scale))
+			logH = int(math.Round(float64(physH) / scale))
+		}
 		return Event{
 			Type:           EventResize,
-			Width:          event.Width,
-			Height:         event.Height,
-			PhysicalWidth:  event.Width,
-			PhysicalHeight: event.Height,
+			Width:          logW,
+			Height:         logH,
+			PhysicalWidth:  physW,
+			PhysicalHeight: physH,
 		}
 	case x11.EventTypeFocus:
 		return Event{Type: EventFocus, Focused: event.Focused}
@@ -275,9 +296,16 @@ type x11PlatformWindow struct {
 	id       WindowID
 }
 
-func (w *x11PlatformWindow) ID() WindowID                   { return w.id }
-func (w *x11PlatformWindow) GetHandle() (uintptr, uintptr)  { return w.platform.inner.GetHandle() }
-func (w *x11PlatformWindow) LogicalSize() (int, int)        { return w.platform.inner.GetSize() }
+func (w *x11PlatformWindow) ID() WindowID                  { return w.id }
+func (w *x11PlatformWindow) GetHandle() (uintptr, uintptr) { return w.platform.inner.GetHandle() }
+
+// LogicalSize returns the window size in logical units (DIP/platform points).
+// On HiDPI, divides physical pixels by the scale factor.
+func (w *x11PlatformWindow) LogicalSize() (int, int) {
+	return w.platform.inner.LogicalSize()
+}
+
+// PhysicalSize returns the window size in physical device pixels (what the GPU sees).
 func (w *x11PlatformWindow) PhysicalSize() (int, int)       { return w.platform.inner.GetSize() }
 func (w *x11PlatformWindow) ScaleFactor() float64           { return w.platform.inner.ScaleFactor() }
 func (w *x11PlatformWindow) ShouldClose() bool              { return w.platform.inner.ShouldClose() }
@@ -357,8 +385,15 @@ func (w *waylandPlatformWindow) LogicalSize() (int, int) {
 	return wp.width, wp.height
 }
 
+// PhysicalSize returns the physical pixel dimensions for the GPU framebuffer.
+// On Wayland, configure events report logical size. Physical = logical * scale.
 func (w *waylandPlatformWindow) PhysicalSize() (int, int) {
-	return w.LogicalSize() // Wayland: scale tracking TODO
+	lw, lh := w.LogicalSize()
+	scale := w.ScaleFactor()
+	if scale <= 1.0 {
+		return lw, lh
+	}
+	return int(math.Round(float64(lw) * scale)), int(math.Round(float64(lh) * scale))
 }
 
 func (w *waylandPlatformWindow) ScaleFactor() float64 {
@@ -1045,7 +1080,7 @@ func (p *waylandPlatform) setupInputCallbacks() {
 				if vulkanW != w.width || vulkanH != w.height {
 					w.width = vulkanW
 					w.height = vulkanH
-					w.events = append(w.events, Event{
+					w.events.Push(Event{
 						Type:           EventResize,
 						Width:          vulkanW,
 						Height:         vulkanH,
@@ -1176,11 +1211,9 @@ func (w *waylandWindow) dispatchKeyEvent(key gpucontext.Key, mods gpucontext.Mod
 	w.queueEvent(Event{Type: evType, Key: key, Mods: mods})
 }
 
-// queueEvent appends a platform event to the window's event queue.
+// queueEvent pushes a platform event to the window's ring buffer queue.
 func (w *waylandWindow) queueEvent(event Event) {
-	w.eventMu.Lock()
-	defer w.eventMu.Unlock()
-	w.events = append(w.events, event)
+	w.events.Push(event)
 }
 
 // evdevModsToModifiers converts evdev modifier bitmasks to gpucontext.Modifiers.
@@ -1844,19 +1877,14 @@ func evdevKeycodeToRune(keycode uint32, shift, capsLock bool) rune {
 
 // PollEvents processes pending Wayland events using the event queue pattern.
 // Same architecture as X11 and Windows platforms: callbacks queue events,
-// PollEvents dequeues one at a time.
+// PollEvents dequeues one at a time. Ring buffer (ADR-031).
 func (p *waylandPlatform) PollEvents() Event {
 	w := p.primary
 
 	// First, drain queued events (from previous dispatch).
-	w.eventMu.Lock()
-	if len(w.events) > 0 {
-		event := w.events[0]
-		w.events = w.events[1:]
-		w.eventMu.Unlock()
-		return event
+	if e, ok := w.events.Pop(); ok {
+		return e
 	}
-	w.eventMu.Unlock()
 
 	// Dispatch all pending events on the C display (single connection).
 	// Callbacks will queue events via queueEvent().
@@ -1879,12 +1907,8 @@ func (p *waylandPlatform) PollEvents() Event {
 	}
 
 	// Return first queued event, or EventNone if empty.
-	w.eventMu.Lock()
-	defer w.eventMu.Unlock()
-	if len(w.events) > 0 {
-		event := w.events[0]
-		w.events = w.events[1:]
-		return event
+	if e, ok := w.events.Pop(); ok {
+		return e
 	}
 	return Event{Type: EventNone}
 }
