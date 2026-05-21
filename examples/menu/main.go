@@ -24,6 +24,17 @@ func main() {
 		AddItem(gogpu.MenuItem{Title: "Quit", Role: gogpu.RoleQuit}),
 	)
 
+	// Additional custom menu (initially empty, will not be displayed until items added)
+	toolsMenu := gogpu.NewMenuWithTitle("Tools")
+	app.SetCustomMenu("tools", toolsMenu)
+
+	// Later we add items to it
+	toolsMenu.AddItem(gogpu.MenuItem{
+		Title:  "Settings",
+		Action: func() { log.Println("Tools -> Settings clicked") },
+	})
+	app.SetCustomMenu("tools", toolsMenu)
+
 	// Add items to the Window menu using roles
 	if windowMenu := app.GetSystemMenu(gogpu.SystemMenuWindow); windowMenu != nil {
 		windowMenu.AddItem(gogpu.MenuItem{Separator: true})

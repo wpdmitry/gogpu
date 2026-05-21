@@ -2,7 +2,7 @@ package gogpu
 
 import "github.com/gogpu/gogpu/internal/platform"
 
-// MenuRole maps to standard macOS menu items.
+// MenuRole maps to standard menu items.
 type MenuRole int
 
 const (
@@ -28,6 +28,7 @@ type MenuItem struct {
 	Role      MenuRole
 	Disabled  bool
 	Separator bool
+	Submenu   *Menu
 }
 
 // Menu represents a top-level menu.
@@ -39,6 +40,11 @@ type Menu struct {
 // NewMenu creates an empty menu.
 func NewMenu() *Menu {
 	return &Menu{}
+}
+
+// NewMenuWithTitle creates an empty menu with the specified title.
+func NewMenuWithTitle(title string) *Menu {
+	return &Menu{Title: title}
 }
 
 // AddItem appends an item to the menu and returns the menu for chaining.
