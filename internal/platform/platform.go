@@ -137,6 +137,9 @@ type PlatformManager interface {
 	// SubpixelLayout returns the display's subpixel arrangement for LCD text.
 	SubpixelLayout() gpucontext.SubpixelLayout
 
+	// SetAppName sets the application name (displayed in menus).
+	SetAppName(name string)
+
 	// Destroy releases all platform resources.
 	Destroy()
 }
@@ -219,6 +222,53 @@ type PlatformWindow interface {
 
 	// Destroy releases native window resources.
 	Destroy()
+}
+
+type MenuRole int
+
+const (
+	MenuRoleNone MenuRole = iota
+	MenuRoleAbout
+	MenuRolePreferences
+	MenuRoleServices
+	MenuRoleHide
+	MenuRoleHideOthers
+	MenuRoleShowAll
+	MenuRoleQuit
+	MenuRoleClose
+	MenuRoleMinimize
+	MenuRoleZoom
+	MenuRoleFullScreen
+	MenuRoleBringAllToFront
+)
+
+// PlatMenuManager is an optional interface for platforms that support
+// native application menus (macOS). Platforms that don't support menus
+// simply don't implement this interface.
+type PlatMenuManager interface {
+	// SetApplicationMenu replaces the native application menu with the given items.
+	SetApplicationMenu(items []MenuItem)
+	// AddToSystemMenu adds items to a standard system menu (Application, Window, etc.).
+	// If the platform doesn't support the requested menu, it returns false.
+	AddToSystemMenu(menu SystemMenu, items []MenuItem) bool
+}
+
+// SystemMenu identifies a standard menu that can be extended.
+type SystemMenu int
+
+const (
+	SystemMenuApplication SystemMenu = iota
+	SystemMenuWindow
+)
+
+// MenuItem is a platform-agnostic description of a menu item.
+// Mirrors gogpu.MenuItem without importing gogpu.
+type MenuItem struct {
+	Title     string
+	Action    func()
+	Role      MenuRole
+	Disabled  bool
+	Separator bool
 }
 
 // NewManager creates a platform-specific PlatformManager.

@@ -58,6 +58,7 @@ type objcRuntime struct {
 	cifVoidPtr  *types.CallInterface // Returns void*, takes variadic args
 	cifFpret    *types.CallInterface // Returns floating point
 	cifSelector *types.CallInterface // For sel_registerName
+	cifSend5Ptr *types.CallInterface // self, _cmd, arg0, arg1, arg2 (5 ptr)
 
 	// Protect shared CIF usage; CallInterface is not concurrency-safe.
 	cifMu sync.Mutex
@@ -208,6 +209,7 @@ func loadRuntime() error {
 	objcRT.cifVoidPtr = &types.CallInterface{}
 	objcRT.cifFpret = &types.CallInterface{}
 	objcRT.cifSelector = &types.CallInterface{}
+	objcRT.cifSend5Ptr = &types.CallInterface{}
 
 	// CIF for generic pointer-returning calls (2 args: self, _cmd)
 	err = ffi.PrepareCallInterface(
@@ -230,6 +232,23 @@ func loadRuntime() error {
 		types.PointerTypeDescriptor,
 		[]*types.TypeDescriptor{
 			types.PointerTypeDescriptor, // name
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	// CIF for Send5Ptr (self, _cmd, arg0, arg1, arg2)
+	err = ffi.PrepareCallInterface(
+		objcRT.cifSend5Ptr,
+		types.DefaultCall,
+		types.PointerTypeDescriptor,
+		[]*types.TypeDescriptor{
+			types.PointerTypeDescriptor, // self
+			types.PointerTypeDescriptor, // _cmd
+			types.PointerTypeDescriptor, // arg0
+			types.PointerTypeDescriptor, // arg1
+			types.PointerTypeDescriptor, // arg2
 		},
 	)
 	if err != nil {
@@ -479,6 +498,44 @@ func msgSend(self ID, sel SEL, args ...uintptr) ID {
 // SendPtr sends a message with one pointer argument.
 func (id ID) SendPtr(sel SEL, arg uintptr) ID {
 	return msgSend(id, sel, arg)
+}
+
+// Send5Ptr calls objc_msgSend with three additional pointer arguments.
+func (id ID) Send5Ptr(sel SEL, arg0, arg1, arg2 uintptr) ID {
+	if id == 0 || sel == 0 {
+		return 0
+	}
+	if err := initRuntime(); err != nil {
+		return 0
+	}
+
+	argBox := &struct {
+		self uintptr
+		sel  uintptr
+		arg0 uintptr
+		arg1 uintptr
+		arg2 uintptr
+	}{
+		self: uintptr(id),
+		sel:  uintptr(sel),
+		arg0: arg0,
+		arg1: arg1,
+		arg2: arg2,
+	}
+	argPtrs := []unsafe.Pointer{
+		unsafe.Pointer(&argBox.self),
+		unsafe.Pointer(&argBox.sel),
+		unsafe.Pointer(&argBox.arg0),
+		unsafe.Pointer(&argBox.arg1),
+		unsafe.Pointer(&argBox.arg2),
+	}
+
+	var result uintptr
+	if err := ffi.CallFunction(objcRT.cifSend5Ptr, objcRT.objcMsgSend,
+		unsafe.Pointer(&result), argPtrs); err != nil {
+		return 0
+	}
+	return ID(result)
 }
 
 // SendBool sends a message with one boolean argument.
