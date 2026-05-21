@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **macOS system menu API** (#242, @lkmavi) -- `SetMenu()`, `GetSystemMenu()`, `MenuRole` for native macOS menu bar. Role-based item mapping (About, Preferences, Quit, Minimize, Zoom, etc.). `SetAppName()` / `WithAppName()` for menu display. Pending menu support (set before `Run()`). New `examples/menu/` demo.
+
+### Changed
+
+- **Renderer decoupled from window** (LIFECYCLE Phase 2, #223) -- `SurfaceState` enum (None/Ready/Configured/Lost) replaces boolean `configured` flag. `CanRender()` method with explicit Outdated/Lost recovery (wgpu framework.rs pattern). `platWindow` moved from Renderer to per-window windowSurface. Lazy acquire fields eliminated — windowSurface is fully self-contained. Prepares for multi-window surface lifecycle and mobile platforms.
+
+## [0.37.12] - 2026-05-21
+
+### Fixed
+
+- **GPUContextProvider implements PlatformProvider** (ADR-024) -- `gpuContextAdapter` delegates all 8 `PlatformProvider` methods to `App`. Fixes `ggcanvas.New()` LCD subpixel auto-detection: `provider.(gpucontext.PlatformProvider)` type assertion now succeeds. ClearType rendering works automatically without UI-layer workaround.
+
+### Changed
+
+- **deps:** wgpu v0.28.5 -> v0.28.6 (GLES hidden window pattern — Instance-owned GL context on hidden 1×1 HWND, Rust wgpu parity)
+
 ## [0.37.11] - 2026-05-21
 
 ### Changed

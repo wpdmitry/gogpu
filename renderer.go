@@ -2,6 +2,7 @@ package gogpu
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"log/slog"
@@ -20,19 +21,35 @@ import (
 // Layout: rect(4 floats) + screen(2 floats) + alpha(1 float) + premultiplied(1 float) = 32 bytes
 const texQuadUniformSize = 32
 
+// SurfaceState tracks the lifecycle state of a GPU surface.
+// Transitions follow the WebGPU spec + wgpu framework.rs recovery pattern:
+//
+//	SurfaceNone → SurfaceReady (surface assigned) → SurfaceConfigured (dimensions set)
+//	SurfaceConfigured → SurfaceLost (device lost / fatal) → SurfaceNone (recreate)
+//	SurfaceConfigured → SurfaceReady (outdated / resize / minimize unconfigures)
+type SurfaceState int
+
+const (
+	SurfaceNone       SurfaceState = iota // No surface (headless, Android suspended, pre-init)
+	SurfaceReady                          // Surface assigned but not yet configured
+	SurfaceConfigured                     // Configured with valid dimensions — can render
+	SurfaceLost                           // Device lost or fatal error — must recreate
+)
+
 // windowSurface holds per-window GPU rendering state.
 // Each window gets its own surface, format, dimensions, and frame state.
 // In multi-window mode, one Renderer holds multiple windowSurface instances.
-// Currently, only the primary windowSurface is used (single-window backward compat).
 type windowSurface struct {
 	renderer *Renderer // back-reference to shared GPU state
+
+	platWindow platform.PlatformWindow // platform window for PrepareFrame and handle access
 
 	surface *wgpu.Surface
 	format  gputypes.TextureFormat
 	width   uint32
 	height  uint32
 
-	configured bool // Whether surface has been configured with valid dimensions
+	state SurfaceState
 
 	// Current frame state (reused, zero alloc per frame)
 	currentSurfaceTexture *wgpu.SurfaceTexture
@@ -72,11 +89,6 @@ type windowSurface struct {
 	// If OnDraw produces no GPU work, beginFrame is never called → no
 	// swapchain acquire/present → zero GPU overhead.
 	frameStarted bool
-
-	// Lazy acquire state — stored by prepareForDraw, consumed by ensureFrameStarted.
-	lazyPlatWin platform.PlatformWindow
-	lazyDevice  *wgpu.Device
-	lazyAdapter *wgpu.Adapter
 }
 
 // Renderer manages the GPU rendering pipeline.
@@ -130,9 +142,6 @@ type Renderer struct {
 	deferredDestroys   []func()
 	deferredDestroysMu sync.Mutex
 
-	// Platform window reference for surface creation and frame queries
-	platWindow platform.PlatformWindow
-
 	// PowerPreference for adapter selection
 	powerPreference gputypes.PowerPreference
 
@@ -151,13 +160,12 @@ type Renderer struct {
 // newRenderer creates and initializes a new renderer.
 func newRenderer(platWin platform.PlatformWindow, backendType types.BackendType, graphicsAPI types.GraphicsAPI, vsync bool, powerPref gputypes.PowerPreference) (*Renderer, error) {
 	r := &Renderer{
-		platWindow:      platWin,
 		powerPreference: powerPref,
 	}
-	// Store vsync temporarily; initCommon will move it to the primary windowSurface.
 	r.primary = &windowSurface{
-		renderer: r,
-		vsync:    vsync,
+		renderer:   r,
+		platWindow: platWin,
+		vsync:      vsync,
 	}
 
 	if err := r.init(backendType, graphicsAPI); err != nil {
@@ -222,7 +230,7 @@ func (r *Renderer) initNative(graphicsAPI types.GraphicsAPI) error {
 	}
 
 	// Get platform handles for surface creation
-	displayHandle, windowHandle := r.platWindow.GetHandle()
+	displayHandle, windowHandle := r.primary.platWindow.GetHandle()
 
 	// Create surface via wgpu public API — stored on primary windowSurface
 	surface, err := r.instance.CreateSurface(displayHandle, windowHandle)
@@ -230,6 +238,7 @@ func (r *Renderer) initNative(graphicsAPI types.GraphicsAPI) error {
 		return fmt.Errorf("gogpu: failed to create surface: %w", err)
 	}
 	r.primary.surface = surface
+	r.primary.state = SurfaceReady
 
 	// Request adapter compatible with the surface.
 	// Passing CompatibleSurface is required for GLES backends which defer
@@ -262,7 +271,7 @@ func (r *Renderer) initCommon() error {
 	// On some platforms (especially macOS), the window may not have valid
 	// dimensions immediately after creation. In that case, we defer surface
 	// configuration until the first Resize event.
-	width, height := r.platWindow.PhysicalSize()
+	width, height := r.primary.platWindow.PhysicalSize()
 
 	// Use BGRA8Unorm which is common across platforms
 	r.primary.format = gputypes.TextureFormatBGRA8Unorm
@@ -278,9 +287,9 @@ func (r *Renderer) initCommon() error {
 		if err := r.primary.configure(r.device, r.adapter); err != nil {
 			return fmt.Errorf("gogpu: failed to configure surface: %w", err)
 		}
-		r.primary.configured = true
+		r.primary.state = SurfaceConfigured
 	}
-	// If dimensions are zero, configured remains false.
+	// If dimensions are zero, state remains SurfaceReady.
 	// The surface will be configured on the first Resize event with valid dimensions.
 
 	return nil
@@ -378,9 +387,9 @@ func (ws *windowSurface) resize(width, height int, device *wgpu.Device, adapter 
 	if width <= 0 || height <= 0 {
 		// Window minimized or invisible -- unconfigure surface to prevent
 		// zero-extent swapchain creation on the next frame (VK-VAL-001).
-		if ws.configured {
+		if ws.state == SurfaceConfigured {
 			ws.surface.Unconfigure()
-			ws.configured = false
+			ws.state = SurfaceReady
 		}
 		return
 	}
@@ -412,7 +421,7 @@ func (ws *windowSurface) resize(width, height int, device *wgpu.Device, adapter 
 		ws.height = oldHeight
 		return
 	}
-	ws.configured = true
+	ws.state = SurfaceConfigured
 }
 
 // BeginFrame prepares a new frame for rendering.
@@ -423,15 +432,21 @@ func (r *Renderer) BeginFrame() bool {
 	// on the render thread where GPU operations are safe.
 	r.DrainDeferredDestroys()
 
-	return r.primary.beginFrame(r.platWindow, r.device, r.adapter)
+	return r.primary.beginFrame(r.primary.platWindow, r.device, r.adapter)
+}
+
+// CanRender reports whether this surface is ready for draw operations.
+func (ws *windowSurface) CanRender() bool {
+	return ws.state == SurfaceConfigured && ws.surface != nil
 }
 
 // beginFrame acquires the next surface texture for rendering on this window.
 // Returns false if frame cannot be acquired (surface not configured, minimized, etc.).
+// Recovery follows the wgpu framework.rs pattern:
+//   - ErrSurfaceOutdated → reconfigure (swapchain stale after resize/DPI change)
+//   - ErrSurfaceLost → mark SurfaceLost (caller must recreate)
 func (ws *windowSurface) beginFrame(platWin platform.PlatformWindow, device *wgpu.Device, adapter *wgpu.Adapter) bool {
-	// Skip if surface is not configured yet.
-	// This happens when the window has zero dimensions (minimized, not yet visible).
-	if !ws.configured {
+	if !ws.CanRender() {
 		return false
 	}
 
@@ -440,8 +455,6 @@ func (ws *windowSurface) beginFrame(platWin platform.PlatformWindow, device *wgp
 	if platWin != nil {
 		result := platWin.PrepareFrame()
 		if result.ScaleChanged && result.PhysicalWidth > 0 && result.PhysicalHeight > 0 {
-			// Scale changed (window moved between monitors with different DPI).
-			// Reconfigure surface with new physical dimensions.
 			ws.width = result.PhysicalWidth
 			ws.height = result.PhysicalHeight
 			_ = ws.configure(device, adapter)
@@ -451,12 +464,7 @@ func (ws *windowSurface) beginFrame(platWin platform.PlatformWindow, device *wgp
 	// Acquire the next surface texture via wgpu public API.
 	surfaceTexture, _, err := ws.surface.GetCurrentTexture()
 	if err != nil {
-		slog.Error("GET TEXTURE ERROR", "err", err)
-		// Surface needs reconfiguration (outdated or lost).
-		// Only attempt if we have valid dimensions.
-		if ws.width > 0 && ws.height > 0 {
-			_ = ws.configure(device, adapter)
-		}
+		ws.recoverFromAcquireError(err, device, adapter)
 		return false
 	}
 
@@ -477,6 +485,30 @@ func (ws *windowSurface) beginFrame(platWin platform.PlatformWindow, device *wgp
 	ws.hasGPUWork = false
 
 	return true
+}
+
+// recoverFromAcquireError handles surface texture acquisition failures.
+// Outdated surfaces are reconfigured (common after resize/DPI change).
+// Lost surfaces transition to SurfaceLost for caller-level recreation.
+func (ws *windowSurface) recoverFromAcquireError(err error, device *wgpu.Device, adapter *wgpu.Adapter) {
+	switch {
+	case errors.Is(err, wgpu.ErrSurfaceOutdated):
+		slog.Debug("gogpu: surface outdated, reconfiguring", "width", ws.width, "height", ws.height)
+		if ws.width > 0 && ws.height > 0 {
+			if cfgErr := ws.configure(device, adapter); cfgErr != nil {
+				slog.Error("gogpu: reconfigure after outdated failed", "err", cfgErr)
+				ws.state = SurfaceLost
+			}
+		}
+	case errors.Is(err, wgpu.ErrSurfaceLost):
+		slog.Error("gogpu: surface lost", "err", err)
+		ws.state = SurfaceLost
+	default:
+		slog.Error("gogpu: surface texture acquire failed", "err", err)
+		if ws.width > 0 && ws.height > 0 {
+			_ = ws.configure(device, adapter)
+		}
+	}
 }
 
 // EndFrame presents the rendered frame on the primary window.
@@ -528,14 +560,12 @@ func (ws *windowSurface) present() {
 	}
 }
 
-// prepareLazyAcquire stores state for deferred beginFrame.
+// prepareLazyAcquire resets per-frame state for deferred beginFrame.
 // The actual swapchain acquire happens on first draw call via ensureFrameStarted.
-func (ws *windowSurface) prepareLazyAcquire(platWin platform.PlatformWindow, device *wgpu.Device, adapter *wgpu.Adapter) {
+// Uses ws.platWindow and ws.renderer.{device,adapter} — no parameters needed.
+func (ws *windowSurface) prepareLazyAcquire() {
 	ws.frameStarted = false
 	ws.hasGPUWork = false
-	ws.lazyPlatWin = platWin
-	ws.lazyDevice = device
-	ws.lazyAdapter = adapter
 }
 
 // ensureFrameStarted calls beginFrame on first draw call (lazy acquire pattern).
@@ -545,14 +575,11 @@ func (ws *windowSurface) ensureFrameStarted() bool {
 		return ws.currentView != nil
 	}
 	ws.frameStarted = true
-	return ws.beginFrame(ws.lazyPlatWin, ws.lazyDevice, ws.lazyAdapter)
+	return ws.beginFrame(ws.platWindow, ws.renderer.device, ws.renderer.adapter)
 }
 
-// resetLazyState clears lazy acquire references after frame cycle.
+// resetLazyState clears per-frame state after frame cycle.
 func (ws *windowSurface) resetLazyState() {
-	ws.lazyPlatWin = nil
-	ws.lazyDevice = nil
-	ws.lazyAdapter = nil
 	ws.frameStarted = false
 	ws.hasGPUWork = false
 }
@@ -1185,4 +1212,5 @@ func (ws *windowSurface) destroy() {
 		ws.surface.Release()
 		ws.surface = nil
 	}
+	ws.state = SurfaceNone
 }

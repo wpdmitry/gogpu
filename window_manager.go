@@ -332,10 +332,12 @@ func (a *App) NewWindow(config Config) (*Window, error) {
 
 	// Create windowSurface for this window.
 	ws := &windowSurface{
-		renderer: a.renderer,
-		surface:  surface,
-		format:   a.renderer.primary.format,
-		vsync:    false, // Secondary windows: Immediate (ADR-010 VSync strategy)
+		renderer:   a.renderer,
+		platWindow: platWindow,
+		surface:    surface,
+		format:     a.renderer.primary.format,
+		vsync:      false, // Secondary windows: Immediate (ADR-010 VSync strategy)
+		state:      SurfaceReady,
 	}
 
 	// Configure surface with initial dimensions on the render thread.
@@ -347,7 +349,7 @@ func (a *App) NewWindow(config Config) (*Window, error) {
 			if cfgErr := ws.configure(a.renderer.device, a.renderer.adapter); cfgErr != nil {
 				slog.Warn("gogpu: failed to configure secondary surface", "err", cfgErr)
 			} else {
-				ws.configured = true
+				ws.state = SurfaceConfigured
 			}
 		}
 	})
