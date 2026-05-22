@@ -595,16 +595,18 @@ func TestApp_OnAnyWindowClosed_Chaining(t *testing.T) {
 
 func TestApp_OnAnyWindowClosed_Primary(t *testing.T) {
 	app := &App{
-		windowManager: newWindowManager(),
-		renderLoop:    &mockRenderLoop{},
+		windowManager:          newWindowManager(),
+		renderLoop:             &mockRenderLoop{},
+		quitOnLastWindowClosed: true,
 	}
 	pid := platform.NewWindowID()
+	primaryID := app.windowManager.allocate()
 	app.primaryWindow = &Window{
-		id:         app.windowManager.allocate(),
+		id:         primaryID,
 		platformID: pid,
 		visible:    true,
 		platWindow: &mockWindow{},
-		surface:    &windowSurface{},
+		surface:    &RenderTarget{},
 	}
 	app.primaryPlatformID = pid
 	app.windowManager.add(app.primaryWindow)
@@ -619,11 +621,15 @@ func TestApp_OnAnyWindowClosed_Primary(t *testing.T) {
 		}, nil, nil,
 	)
 
+	// ADR-026: primary close with no other windows → app exits
 	if app.running {
-		t.Error("app should be stopped after primary close")
+		t.Error("app should be stopped after last window close")
 	}
-	if closedID != app.primaryWindow.id {
-		t.Errorf("got ID %d, want %d", closedID, app.primaryWindow.id)
+	if app.primaryWindow != nil {
+		t.Error("primaryWindow should be nil after close")
+	}
+	if closedID != primaryID {
+		t.Errorf("got ID %d, want %d", closedID, primaryID)
 	}
 }
 
@@ -639,7 +645,7 @@ func TestApp_OnAnyWindowClosed_PrimaryRejected(t *testing.T) {
 		platformID: pid,
 		visible:    true,
 		platWindow: &mockWindow{},
-		surface:    &windowSurface{},
+		surface:    &RenderTarget{},
 	}
 	app.primaryWindow.SetOnClose(func() bool { return false })
 	app.windowManager.add(app.primaryWindow)
@@ -725,6 +731,87 @@ func TestApp_OnAnyWindowClosed_SecondaryRejected(t *testing.T) {
 	}
 }
 
+// --- ADR-026 Lifecycle Tests ---
+
+func TestApp_PrimaryCloseKeepsSecondary(t *testing.T) {
+	app := &App{
+		windowManager:          newWindowManager(),
+		renderLoop:             &mockRenderLoop{},
+		running:                true,
+		quitOnLastWindowClosed: true,
+	}
+
+	// Create primary
+	primaryPID := platform.NewWindowID()
+	primaryID := app.windowManager.allocate()
+	app.primaryWindow = &Window{
+		id: primaryID, platformID: primaryPID,
+		visible: true, platWindow: &mockWindow{}, surface: &RenderTarget{},
+	}
+	app.primaryPlatformID = primaryPID
+	app.windowManager.add(app.primaryWindow)
+
+	// Create secondary
+	secondaryPID := platform.NewWindowID()
+	secondaryID := app.windowManager.allocate()
+	secondary := &Window{
+		id: secondaryID, platformID: secondaryPID,
+		visible: true, platWindow: &mockWindow{}, surface: &RenderTarget{},
+	}
+	app.windowManager.add(secondary)
+
+	// Close primary
+	app.classifyEvent(&platform.Event{Type: platform.EventClose, WindowID: primaryPID}, nil, nil)
+
+	if app.primaryWindow != nil {
+		t.Error("primaryWindow should be nil after close")
+	}
+	if !app.running {
+		t.Error("app should still be running — secondary window alive")
+	}
+	if app.windowManager.get(secondaryID) == nil {
+		t.Error("secondary window should still exist")
+	}
+	if app.windowManager.count() != 1 {
+		t.Errorf("expected 1 window remaining, got %d", app.windowManager.count())
+	}
+
+	// Close secondary — NOW app should exit
+	app.classifyEvent(&platform.Event{Type: platform.EventClose, WindowID: secondaryPID}, nil, nil)
+
+	if app.running {
+		t.Error("app should stop after last window closed")
+	}
+	if app.windowManager.count() != 0 {
+		t.Errorf("expected 0 windows, got %d", app.windowManager.count())
+	}
+}
+
+func TestApp_QuitOnLastWindowClosedFalse(t *testing.T) {
+	app := &App{
+		windowManager:          newWindowManager(),
+		renderLoop:             &mockRenderLoop{},
+		running:                true,
+		quitOnLastWindowClosed: false,
+	}
+
+	pid := platform.NewWindowID()
+	id := app.windowManager.allocate()
+	app.primaryWindow = &Window{
+		id: id, platformID: pid,
+		visible: true, platWindow: &mockWindow{}, surface: &RenderTarget{},
+	}
+	app.primaryPlatformID = pid
+	app.windowManager.add(app.primaryWindow)
+
+	// Close only window
+	app.classifyEvent(&platform.Event{Type: platform.EventClose, WindowID: pid}, nil, nil)
+
+	if !app.running {
+		t.Error("app should still run with quitOnLastWindowClosed=false")
+	}
+}
+
 func TestApp_FocusEvent_SetsFocusedWindow(t *testing.T) {
 	app := &App{
 		windowManager: newWindowManager(),
@@ -773,7 +860,7 @@ func TestApp_HandleSecondaryResize_NoPhysicalResize(t *testing.T) {
 	}
 	platformID := platform.NewWindowID()
 	internalID := app.windowManager.allocate()
-	surface := &windowSurface{width: 10, height: 10}
+	surface := &RenderTarget{width: 10, height: 10}
 	w := &Window{id: internalID, platformID: platformID, surface: surface, visible: true}
 	app.windowManager.add(w)
 
@@ -812,7 +899,7 @@ func TestApp_PrimaryWindow_IDs(t *testing.T) {
 		platformID: platformID,
 		visible:    true,
 		platWindow: &mockWindow{},
-		surface:    &windowSurface{},
+		surface:    &RenderTarget{},
 	}
 	app.windowManager.add(app.primaryWindow)
 
@@ -836,7 +923,7 @@ func TestApp_ProcessEvents_SecondaryResizeCycle(t *testing.T) {
 
 	platformID := platform.NewWindowID()
 	internalID := app.windowManager.allocate()
-	surface := &windowSurface{width: 10, height: 10}
+	surface := &RenderTarget{width: 10, height: 10}
 	w := &Window{
 		id:         internalID,
 		platformID: platformID,
@@ -894,7 +981,7 @@ func TestApp_WindowCloseEvent_OnClosePanic(t *testing.T) {
 		platformID: pid,
 		visible:    true,
 		platWindow: &mockWindow{},
-		surface:    &windowSurface{},
+		surface:    &RenderTarget{},
 	}
 	app.primaryPlatformID = pid
 	app.windowManager.add(app.primaryWindow)
