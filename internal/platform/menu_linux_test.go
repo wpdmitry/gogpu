@@ -495,10 +495,10 @@ func TestMenuEncodeSignal_FixedHeader(t *testing.T) {
 	}
 }
 
-// --- menuAssembleMsg alignment ---
+// --- dbusAssembleMsg alignment ---
 
-func TestMenuAssembleMsg_8ByteAligned(t *testing.T) {
-	raw := menuAssembleMsg(dbusMsgReturn, 1, []byte{0xAA}, nil)
+func TestDbusAssembleMsg_8ByteAligned(t *testing.T) {
+	raw := dbusAssembleMsg(dbusMsgReturn, 0, 1, []byte{0xAA}, nil)
 	hdrArrayLen := binary.LittleEndian.Uint32(raw[12:16])
 	headerTotal := 16 + int(hdrArrayLen)
 	// Body must start on an 8-byte boundary.
@@ -506,6 +506,48 @@ func TestMenuAssembleMsg_8ByteAligned(t *testing.T) {
 	expected := headerTotal + padLen
 	if len(raw) != expected {
 		t.Errorf("total length = %d, want %d (8-byte aligned header)", len(raw), expected)
+	}
+}
+
+func TestDbusAssembleMsg_FlagsWritten(t *testing.T) {
+	raw := dbusAssembleMsg(dbusMsgCall, dbusFlagNoReplyExpected, 1, nil, nil)
+	if raw[2] != dbusFlagNoReplyExpected {
+		t.Errorf("flags byte = %#x, want %#x", raw[2], dbusFlagNoReplyExpected)
+	}
+}
+
+func TestDbusAssembleMsg_ZeroFlags(t *testing.T) {
+	raw := dbusAssembleMsg(dbusMsgReturn, 0, 1, nil, nil)
+	if raw[2] != 0 {
+		t.Errorf("flags byte = %#x, want 0 for METHOD_RETURN", raw[2])
+	}
+}
+
+// TestMenuEncodeCall_NoReplyExpected verifies that RegisterWindow calls carry
+// the NO_REPLY_EXPECTED flag so the D-Bus daemon does not wait for a reply.
+func TestMenuEncodeCall_NoReplyExpected(t *testing.T) {
+	raw := menuEncodeCall(1, "dest", "/path", "iface", "Method", "", nil)
+	if len(raw) < 3 {
+		t.Fatal("encoded call too short")
+	}
+	if raw[2] != dbusFlagNoReplyExpected {
+		t.Errorf("flags byte = %#x, want NO_REPLY_EXPECTED (%#x)", raw[2], dbusFlagNoReplyExpected)
+	}
+}
+
+// TestMenuEncodeReturn_NoFlags verifies METHOD_RETURN has no flags set.
+func TestMenuEncodeReturn_NoFlags(t *testing.T) {
+	raw := menuEncodeReturn(1, 1, ":1.1", "", nil)
+	if raw[2] != 0 {
+		t.Errorf("METHOD_RETURN flags = %#x, want 0", raw[2])
+	}
+}
+
+// TestMenuEncodeSignal_NoFlags verifies SIGNAL has no flags set.
+func TestMenuEncodeSignal_NoFlags(t *testing.T) {
+	raw := menuEncodeSignal(1, "/path", "iface", "Signal", "", nil)
+	if raw[2] != 0 {
+		t.Errorf("SIGNAL flags = %#x, want 0", raw[2])
 	}
 }
 
