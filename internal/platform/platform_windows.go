@@ -961,6 +961,7 @@ func (p *windowsPlatform) Destroy() {
 	for _, hwnd := range toDestroy {
 		procDestroyWindow.Call(uintptr(hwnd))
 	}
+	p.hMenu = 0
 	p.primary = nil
 	globalPlatform = nil
 }
@@ -2277,6 +2278,14 @@ func wndProc(hwnd windows.HWND, message uint32, wParam, lParam uintptr) uintptr 
 	case wmRebuildMenu:
 		// Posted by SetApplicationMenu from any goroutine; rebuild here on OS thread.
 		p.applyMenu()
+		return 0
+
+	case wmInitMenuPopup:
+		// HIWORD(lParam) == 1 indicates the Window/system menu (Alt+Space) — skip it.
+		// For our menu bar popups, sync enabled/disabled state just before display.
+		if (lParam>>16)&0xFFFF == 0 {
+			syncPopupEnabled(wParam)
+		}
 		return 0
 
 	case wmDpiChanged:
