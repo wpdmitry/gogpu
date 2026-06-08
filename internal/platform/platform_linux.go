@@ -576,18 +576,35 @@ func (p *waylandPlatform) CreateWindow(config Config) (PlatformWindow, error) {
 	}
 	id := NewWindowID()
 	p.primaryWindowID = id
-	// Wayland has no X11 window ID; use 0. The AppMenu registrar on KDE
-	// Plasma Wayland associates the menu via the bus sender name instead.
 	win := &waylandPlatformWindow{platform: p, id: id}
 	p.menu.window = win
 	p.menu.attachWindow(0)
+
+	// On KDE Plasma Wayland, D-Bus RegisterWindow alone is not enough to bind
+	// the menu to the window. KWin requires set_address on the org_kde_kwin_appmenu
+	// object so it can associate our dbusmenu service with this wl_surface.
+	if p.libwl != nil && p.libwl.HasKDEAppmenu() {
+		busName, objPath := p.menu.busNameAndPath()
+		if busName != "" {
+			p.libwl.SetKDEAppmenuAddress(busName, objPath)
+			if err := p.libwl.Flush(); err != nil {
+				logger().Warn("wayland: KDE appmenu flush failed", "err", err)
+			} else {
+				logger().Info("AppMenu: KDE appmenu address set via Wayland protocol",
+					"service", busName, "path", objPath)
+			}
+		} else {
+			logger().Debug("AppMenu: KDE appmenu protocol available but D-Bus not connected yet")
+		}
+	}
+
 	return win, nil
 }
 
 // initSingleConnection initializes using a single C libwayland connection.
 // Uses Pure Go wire protocol ONLY for registry global discovery, then
 // creates all objects on the C connection via goffi.
-func (p *waylandPlatform) initSingleConnection(config Config) error { //nolint:gocognit // Wayland init binds many protocol extensions sequentially
+func (p *waylandPlatform) initSingleConnection(config Config) error { //nolint:gocognit,maintidx // Wayland init binds many protocol extensions sequentially
 	// Step 1: Use Pure Go protocol to discover registry globals.
 	// This is lightweight (just reads global names/versions), then we disconnect.
 	display, err := wayland.Connect()
@@ -606,10 +623,21 @@ func (p *waylandPlatform) initSingleConnection(config Config) error { //nolint:g
 	required := []string{
 		wayland.InterfaceWlCompositor,
 		wayland.InterfaceXdgWmBase,
+		wayland.InterfaceWlSeat,
 	}
 	if err := registry.WaitForGlobals(required, 5); err != nil {
 		_ = display.Close()
 		return fmt.Errorf("wayland: %w", err)
+	}
+
+	// One extra roundtrip to collect optional globals (decoration, subcompositor,
+	// cursor-shape, etc.) that may arrive slightly after the required ones.
+	// Without this, CSD seat setup intermittently fails because wl_seat is
+	// found by WaitForGlobals but optional globals that arrived in the same
+	// batch haven't been dispatched yet.
+	if err := display.Roundtrip(); err != nil {
+		_ = display.Close()
+		return fmt.Errorf("wayland: extra roundtrip failed: %w", err)
 	}
 
 	// Collect global names/versions for C-side binding
@@ -752,6 +780,18 @@ func (p *waylandPlatform) initSingleConnection(config Config) error { //nolint:g
 		}
 	}
 
+	// Bind org_kde_kwin_appmenu_manager for KDE global menus (optional).
+	// On KDE Plasma Wayland, set_address must be called on this object to associate
+	// our dbusmenu D-Bus service with the wl_surface; RegisterWindow alone is not enough.
+	kdeAppmenuGlobal := registry.GetGlobalByInterface(wayland.InterfaceOrgKdeKwinAppmenuManager)
+	if kdeAppmenuGlobal != nil {
+		if err := libwl.SetupKDEAppmenu(kdeAppmenuGlobal.Name, kdeAppmenuGlobal.Version); err != nil {
+			logger().Warn("KDE appmenu protocol setup failed (global menu may not appear)", "err", err)
+		} else {
+			logger().Debug("KDE appmenu protocol bound")
+		}
+	}
+
 	// Activate CSD if SSD was not available and window is not frameless
 	if decorGlobal == nil && !config.Frameless {
 		if err := p.initCSD(config); err != nil {
@@ -830,8 +870,18 @@ func (p *waylandPlatform) setupInputCallbacks() {
 			w.pointerX = x
 			w.pointerY = y
 			w.pointerIn = true
+			lastCursor := w.currentCursor
 			w.currentCursor = -1 // invalidate cache — compositor resets cursor on enter
 			w.pointerMu.Unlock()
+
+			// Wayland requires the client to explicitly set the cursor after
+			// wl_pointer.enter; without this the pointer becomes invisible.
+			// Restore the last known shape, falling back to the default arrow (0).
+			// GLFW applies the same fix at wl_window.c:1322.
+			if lastCursor < 0 {
+				lastCursor = 0
+			}
+			p.SetCursor(lastCursor)
 
 			w.dispatchPointerEvent(gpucontext.PointerEvent{
 				Type:        gpucontext.PointerEnter,
@@ -2605,9 +2655,20 @@ func (p *x11Platform) ShowSaveFileDialog(opts FileDialogOptions) (string, error)
 }
 
 func (p *waylandPlatform) ShowOpenFileDialog(opts FileDialogOptions) ([]string, error) {
+	// Cancel key repeat before blocking: ShowOpenFileDialog blocks the main
+	// thread, so the timerfd accumulates up to maxRepeatPerPoll (10) expirations.
+	// Without canceling, processRepeatTimer fires all accumulated repeats after
+	// the dialog closes, re-triggering the caller's OnKeyPress handler N times.
+	// timerfd_settime with zero resets the accumulated count (Linux man page).
+	if p.primary != nil {
+		p.primary.cancelAllKeyRepeat()
+	}
 	return showOpenFileDialog(opts)
 }
 
 func (p *waylandPlatform) ShowSaveFileDialog(opts FileDialogOptions) (string, error) {
+	if p.primary != nil {
+		p.primary.cancelAllKeyRepeat()
+	}
 	return showSaveFileDialog(opts)
 }
