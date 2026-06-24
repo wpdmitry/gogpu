@@ -151,7 +151,7 @@ func (l *MetalLayer) SetAutoresizingMask(mask uint) {
 }
 
 // SetContentsGravity sets how the layer's content is positioned within its bounds.
-// Use "topLeft" (kCAGravityTopLeft) to prevent stretching during resize.
+// Use "resize" (kCAGravityResize) to stretch existing content to fill the layer during live resize.
 func (l *MetalLayer) SetContentsGravity(gravity string) {
 	if l == nil || l.id.IsNil() {
 		return
@@ -325,10 +325,11 @@ func NewSurface(window *Window) (*Surface, error) {
 	// Pattern from Skia (GaneshMetalWindowContext_mac.mm) and Gio (metal_macos.go).
 	layer.SetAutoresizingMask(CALayerWidthSizable | CALayerHeightSizable)
 
-	// Prevent content stretching during resize transitions.
-	// Default kCAGravityResize scales content non-uniformly when layer bounds
-	// change before drawableSize is updated.
-	layer.SetContentsGravity("topLeft")
+	// Scale existing content to fill the layer during live resize.
+	// kCAGravityResize (default) stretches the last rendered frame to cover
+	// the newly-exposed region until the GPU presents a fresh drawable —
+	// a brief scale distortion is far less noticeable than a blank gap.
+	layer.SetContentsGravity("resize")
 
 	// Set contentsScale to match Retina backing scale factor.
 	// Without this, CAMetalLayer defaults to 1.0 and the drawable
