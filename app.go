@@ -626,6 +626,9 @@ func (a *App) classifyEvent(event *platform.Event, lastResize *platform.Event, s
 		}
 	case platform.EventClose:
 		a.windowCloseEvent(event)
+	case platform.EventExpose:
+		// No X11 background pixmap — repaint revealed regions ourselves.
+		a.RequestRedraw()
 	case platform.EventFocus:
 		a.focused = event.Focused
 		if event.Focused {
@@ -858,9 +861,16 @@ func (a *App) renderFrameMultiThread() {
 			ctx := newContextForSurface(a.renderer, ws, frame.scale)
 			frame.onDraw(ctx)
 
-			// End frame only if beginFrame was actually called (lazy acquire fired).
-			if ws.frameStarted {
-				a.renderer.endFrameForSurface(ws)
+			// On outdated, present() reconfigured the surface; re-render once at the
+			// live scale (a DPI change is an outdated trigger, so frame.scale may be
+			// stale). One retry only — looping can livelock a live resize; if still
+			// outdated, request another frame since nothing else reschedules on-demand.
+			if ws.frameStarted && a.renderer.endFrameForSurface(ws) {
+				ws.prepareLazyAcquire()
+				frame.onDraw(newContextForSurface(a.renderer, ws, ws.platWindow.ScaleFactor()))
+				if ws.frameStarted && a.renderer.endFrameForSurface(ws) {
+					a.RequestRedraw()
+				}
 			}
 			ws.resetLazyState()
 			a.renderer.currentSurface = nil

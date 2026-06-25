@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.6] - 2026-06-24
+
+### Fixed
+
+- **Surface-outdated on present** (@samyfodil, #342) — `present()` now reconfigures the
+  surface on `wgpu.ErrSurfaceOutdated` (resize/DPI/monitor change) and logs at Debug,
+  matching the acquire path (`recoverFromAcquireError`), instead of logging a spurious
+  ERROR with no recovery. After reconfiguring, the frame is re-rendered once at the new
+  size so resize no longer drops to a blank frame.
+- **X11 black flicker on resize** (@samyfodil, #342) — the window was created with a black
+  `CWBackPixel`, so the X server painted newly-exposed areas black on every resize before
+  the GPU repainted. Use background pixmap `None` instead (X11 default; GLFW/SDL/Chromium
+  pattern) so the server no longer fills the window black; `Expose` events now request a
+  redraw so revealed regions repaint instead of staying undefined.
+
 ## [0.42.5] - 2026-06-24
 
 ### Fixed

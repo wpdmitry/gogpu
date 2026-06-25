@@ -28,8 +28,11 @@ func (c *Connection) CreateWindow(config WindowConfig) (ResourceID, error) {
 	// Generate window ID
 	windowID := c.GenerateID()
 
-	// Set up window attributes
-	valueMask := uint32(CWBackPixel | CWEventMask)
+	// Background pixmap None, not a black BackPixel: a black BackPixel makes the X
+	// server paint newly-exposed areas black on resize before the GPU repaints
+	// (black flicker). None leaves the background untouched — we repaint on resize
+	// and Expose. GLFW/SDL/Chromium pattern.
+	valueMask := uint32(CWBackPixmap | CWEventMask)
 
 	// Event mask - listen for common events
 	eventMask := uint32(
@@ -47,8 +50,8 @@ func (c *Connection) CreateWindow(config WindowConfig) (ResourceID, error) {
 
 	// Value list (order matters - must match bit order in valueMask)
 	valueList := []uint32{
-		screen.BlackPixel, // CWBackPixel
-		eventMask,         // CWEventMask
+		0,         // CWBackPixmap = None — no background fill on resize (anti-flicker)
+		eventMask, // CWEventMask
 	}
 
 	// Build request
