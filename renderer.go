@@ -1140,6 +1140,173 @@ func (r *Renderer) drawTexturedQuad(tex *Texture, opts DrawTextureOptions) error
 	return nil
 }
 
+// RenderToImage renders a single frame to an off-screen texture and returns
+// the result as *image.RGBA. No window or display is required.
+//
+// The draw callback receives a Context whose drawing methods (DrawTriangleColor,
+// DrawTexture, Clear, etc.) write to a temporary off-screen texture of the
+// given size. After draw returns, any pending lazy clear is flushed, the
+// texture is copied to CPU memory, and the pixels are returned.
+//
+// The renderer uses its current surfaceFormat for the off-screen texture so
+// that already-compiled pipelines (triangle, textured-quad) remain valid
+// without re-creation.
+//
+// Not safe for concurrent use with the same renderer instance.
+//
+// TODO: expose server-side / headless image generation via App or Context so
+// callers outside this package can use it without reaching into Renderer.
+func (r *Renderer) RenderToImage(width, height int, draw func(*Context)) (*image.RGBA, error) {
+	if r.device == nil {
+		return nil, errors.New("gogpu: RenderToImage: device not initialized")
+	}
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("gogpu: RenderToImage: invalid size %dx%d", width, height)
+	}
+
+	// Use the renderer's surface format so existing pipelines (triangle, texquad)
+	// share their ColorTargetState.Format without needing re-creation.
+	texFmt := r.surfaceFormat
+
+	offscreen, err := r.device.CreateTexture(&wgpu.TextureDescriptor{
+		Label:         "RenderToImage",
+		Size:          wgpu.Extent3D{Width: uint32(width), Height: uint32(height), DepthOrArrayLayers: 1}, //nolint:gosec // G115: validated positive above
+		MipLevelCount: 1,
+		SampleCount:   1,
+		Dimension:     wgpu.TextureDimension2D,
+		Format:        texFmt,
+		Usage:         wgpu.TextureUsageRenderAttachment | wgpu.TextureUsageCopySrc,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gogpu: RenderToImage: create texture: %w", err)
+	}
+	defer offscreen.Release()
+
+	view, err := r.device.CreateTextureView(offscreen, nil)
+	if err != nil {
+		return nil, fmt.Errorf("gogpu: RenderToImage: create view: %w", err)
+	}
+	defer view.Release()
+
+	// Inject a synthetic RenderTarget so all draw methods write to our
+	// off-screen view instead of a window surface.
+	prevPrimary := r.primary
+	synthetic := &RenderTarget{
+		renderer:     r,
+		width:        uint32(width),  //nolint:gosec // G115: validated positive above
+		height:       uint32(height), //nolint:gosec // G115: validated positive above
+		format:       texFmt,
+		currentView:  view,
+		frameStarted: true,
+	}
+	r.primary = synthetic
+
+	ctx := newContext(r, 1.0)
+	draw(ctx)
+	// Flush Context.Clear() calls that were deferred as a pending clear.
+	synthetic.flushClear(r.device, r)
+
+	r.primary = prevPrimary
+
+	return r.renderToImageReadback(offscreen, texFmt, width, height)
+}
+
+// renderToImageReadback copies an off-screen texture to CPU memory and returns
+// the pixels as *image.RGBA. Extracted from RenderToImage for funlen compliance.
+func (r *Renderer) renderToImageReadback(offscreen *wgpu.Texture, texFmt gputypes.TextureFormat, width, height int) (*image.RGBA, error) {
+	// wgpu requires BytesPerRow to be a multiple of 256.
+	const rowAlign = 256
+	rowBytes := uint32(width) * 4 //nolint:gosec // G115: validated positive in RenderToImage
+	if rem := rowBytes % rowAlign; rem != 0 {
+		rowBytes += rowAlign - rem
+	}
+	bufSize := uint64(rowBytes) * uint64(height) //nolint:gosec // G115: validated positive in RenderToImage
+
+	stagingBuf, err := r.device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: "RenderToImage-staging",
+		Size:  bufSize,
+		Usage: wgpu.BufferUsageCopyDst | wgpu.BufferUsageMapRead,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gogpu: RenderToImage: create staging buffer: %w", err)
+	}
+	defer stagingBuf.Release()
+
+	enc, err := r.device.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{
+		Label: "RenderToImage-copy",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gogpu: RenderToImage: create encoder: %w", err)
+	}
+
+	enc.CopyTextureToBuffer(offscreen, stagingBuf, []wgpu.BufferTextureCopy{
+		{
+			TextureBase: wgpu.ImageCopyTexture{
+				Texture:  offscreen,
+				MipLevel: 0,
+				Aspect:   gputypes.TextureAspectAll,
+			},
+			BufferLayout: wgpu.ImageDataLayout{
+				Offset:       0,
+				BytesPerRow:  rowBytes,
+				RowsPerImage: uint32(height), //nolint:gosec // G115: validated positive in RenderToImage
+			},
+			Size: wgpu.Extent3D{Width: uint32(width), Height: uint32(height), DepthOrArrayLayers: 1}, //nolint:gosec // G115: validated positive in RenderToImage
+		},
+	})
+
+	cmds, err := enc.Finish()
+	if err != nil {
+		return nil, fmt.Errorf("gogpu: RenderToImage: finish encoder: %w", err)
+	}
+	r.submitTracked(cmds)
+
+	// Wait for the copy to land in the staging buffer.
+	r.device.Poll(wgpu.PollWait)
+
+	pending, err := stagingBuf.MapAsync(wgpu.MapModeRead, 0, bufSize)
+	if err != nil {
+		return nil, fmt.Errorf("gogpu: RenderToImage: MapAsync: %w", err)
+	}
+	r.device.Poll(wgpu.PollWait)
+
+	ready, statusErr := pending.Status()
+	if !ready {
+		return nil, errors.New("gogpu: RenderToImage: buffer not ready after poll")
+	}
+	if statusErr != nil {
+		return nil, fmt.Errorf("gogpu: RenderToImage: map status: %w", statusErr)
+	}
+
+	mapped, err := stagingBuf.MappedRange(0, bufSize)
+	if err != nil {
+		_ = stagingBuf.Unmap()
+		return nil, fmt.Errorf("gogpu: RenderToImage: MappedRange: %w", err)
+	}
+	raw := mapped.Bytes()
+
+	// BGRA8Unorm (default surfaceFormat) has B and R swapped vs image.RGBA.
+	isBGRA := texFmt == gputypes.TextureFormatBGRA8Unorm || texFmt == gputypes.TextureFormatBGRA8UnormSrgb
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			src := y*int(rowBytes) + x*4
+			dst := img.PixOffset(x, y)
+			if isBGRA {
+				img.Pix[dst+0] = raw[src+2] // R ← blue slot
+				img.Pix[dst+1] = raw[src+1] // G
+				img.Pix[dst+2] = raw[src+0] // B ← red slot
+				img.Pix[dst+3] = raw[src+3] // A
+			} else {
+				copy(img.Pix[dst:dst+4], raw[src:src+4])
+			}
+		}
+	}
+
+	_ = stagingBuf.Unmap()
+	return img, nil
+}
+
 // WaitForGPU blocks until all submitted GPU work completes.
 // Call this before destroying user-created GPU resources to prevent
 // Vulkan validation errors about resources still in use by command buffers.
