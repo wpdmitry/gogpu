@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.1] - 2026-06-30
+
+### Added
+
+- **Header alignment API** (@lkmavi, #352) — `HeaderAlignment` type with `HeaderAlignCenter/Left/Right` constants. `Config.WithHeaderAlignment()`, `App.SetHeaderAlignment()`, `Window.SetHeaderAlignment()` for cross-platform title bar alignment control. macOS: transparent title bar with NSTextField injection for center/right. Wayland CSD: bitmap font positioning. Windows/X11: stored, no visual effect (OS-controlled).
+- **Per-window title API** — `Window.SetTitle()`, `Window.Title()` for independent per-window title management.
+- **macOS live resize rendering** — `windowDidResize:` delegate fires render frames during AppKit's modal tracking loop, eliminating stretched frames during resize.
+
+### Fixed
+
+- **macOS multi-window event routing** — all 6 event types (resize, focus, pointer, scroll, key, char) now carry `WindowID`. `WaitEvents()` routes events to the correct window via `[NSEvent window]` matching instead of always using the key window handler.
+- **Wayland CSD multi-window** — migrated CSD pointer callbacks from global `csdCallbackHandle` to per-instance `data unsafe.Pointer`, fixing pointer event misrouting when multiple CSD windows are open. Extracted `setupSecondaryCSD()` helper. Secondary windows now support CSD when SSD is unavailable.
+- **Windows secondary window modal resize** — `resizeSecondaryWindowsDuringModal()` updates swapchains for secondary windows during Win32 modal drag/resize loop.
+- **Live resize hook cleanup** — `SetLiveResizeHook(nil)` on window close prevents use-after-free if AppKit fires stale `windowDidResize:` after surface destruction.
+
 ## [0.43.0] - 2026-06-29
 
 ### Changed
