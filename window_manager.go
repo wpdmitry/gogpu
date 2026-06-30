@@ -33,6 +33,9 @@ type Window struct {
 	surface    *RenderTarget
 	platWindow platform.PlatformWindow // underlying platform window
 
+	// Header configuration
+	headerAlignment HeaderAlignment
+
 	// Per-window callbacks
 	onDraw       func(*Context)
 	onResize     func(int, int)
@@ -360,14 +363,41 @@ func (a *App) NewWindow(config Config) (*Window, error) {
 
 	// Create Window and register in WindowManager.
 	w := &Window{
-		id:         internalID,
-		platformID: platWindow.ID(),
-		config:     config,
-		surface:    ws,
-		platWindow: platWindow,
-		visible:    true,
+		id:              internalID,
+		platformID:      platWindow.ID(),
+		config:          config,
+		surface:         ws,
+		platWindow:      platWindow,
+		headerAlignment: config.HeaderAlignment,
+		visible:         true,
 	}
+
+	applyHeaderAlignment(platWindow, config.HeaderAlignment)
 	a.windowManager.add(w)
+
+	// Install live-resize hook for macOS so this window re-renders during drag.
+	// Without it, AppKit stretches the last frame to fill the new window size.
+	// Mirrors the primary window hook in registerPrimaryWindow.
+	if lr, ok := platWindow.(platform.LiveResizeRenderer); ok {
+		capturedW := w
+		capturedWS := ws
+		lr.SetLiveResizeHook(func() {
+			if a.renderLoop == nil {
+				return
+			}
+			physW, physH := platWindow.PhysicalSize()
+			if physW > 0 && physH > 0 {
+				a.renderLoop.RunOnRenderThreadVoid(func() {
+					capturedWS.resize(physW, physH, a.renderer.device, a.renderer.adapter)
+				})
+			}
+			logW, logH := platWindow.LogicalSize()
+			if capturedW.onResize != nil && logW > 0 && logH > 0 {
+				capturedW.onResize(logW, logH)
+			}
+			a.renderFrameMultiThread()
+		})
+	}
 
 	// Request a redraw so the new window gets its first frame.
 	if a.invalidator != nil {
@@ -408,6 +438,12 @@ func (a *App) closeSecondaryWindow(id WindowID) {
 
 	a.windowManager.remove(id)
 	a.windowManager.release(id)
+
+	// Clear the live resize hook before destroying the surface so AppKit
+	// cannot fire windowDidResize: on a torn-down RenderTarget.
+	if lr, ok := w.platWindow.(platform.LiveResizeRenderer); ok {
+		lr.SetLiveResizeHook(nil)
+	}
 
 	// Release GPU surface on the render thread.
 	if w.surface != nil {

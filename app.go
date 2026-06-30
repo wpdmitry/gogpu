@@ -492,6 +492,8 @@ func (a *App) initPlatform() (platform.PlatformWindow, error) {
 		a.applyHitTestCallback()
 	}
 
+	applyHeaderAlignment(platWindow, a.config.HeaderAlignment)
+
 	// Ensure input subsystems exist. Both EventSource() and Input() use
 	// lazy init so callers can register callbacks before Run(). We must
 	// NOT overwrite instances that were already created — UI frameworks
@@ -514,6 +516,30 @@ func (a *App) initPlatform() (platform.PlatformWindow, error) {
 	// Future: An independent render thread running on its own schedule
 	// would eliminate this callback entirely. See ROADMAP.md for details.
 	a.platWindow.SetModalFrameCallback(a.modalFrameTick)
+
+	// Enable rendering during macOS live resize.
+	//
+	// On macOS, AppKit runs a modal tracking loop during window resize
+	// (inside sendEvent:) that blocks our outer event loop. Without this hook
+	// the old frame sits in the CAMetalLayer at the old size and macOS stretches
+	// it to fill the new window dimensions, producing visible distortion.
+	//
+	// windowDidResize: fires on every resize step from within AppKit's tracking
+	// loop. We call renderFrameMultiThread from the delegate callback goroutine;
+	// the render goroutine is idle while AppKit's modal loop holds the main
+	// goroutine, so RunOnRenderThreadVoid proceeds without deadlock.
+	if lr, ok := platWindow.(platform.LiveResizeRenderer); ok {
+		lr.SetLiveResizeHook(func() {
+			if a.renderLoop == nil {
+				return
+			}
+			physW, physH := platWindow.PhysicalSize()
+			if physW > 0 && physH > 0 {
+				a.renderLoop.RequestResize(uint32(physW), uint32(physH)) //nolint:gosec // G115: validated positive
+			}
+			a.renderFrameMultiThread()
+		})
+	}
 
 	return platWindow, nil
 }
@@ -562,8 +588,9 @@ func (a *App) processEventsMultiThread() {
 	}
 
 	// Queue primary window resize for render thread (deferred pattern).
-	// Don't apply resize during modal resize loop (Windows).
-	if lastResize != nil && a.platWindow != nil && !a.platWindow.InSizeMove() {
+	// RequestResize is an atomic coalesced store so rapid live-resize events
+	// (macOS) collapse to one configure() call per render frame.
+	if lastResize != nil && a.platWindow != nil {
 		// Queue PHYSICAL size for render thread (GPU surface reconfiguration)
 		physW, physH := lastResize.PhysicalWidth, lastResize.PhysicalHeight
 		if physW > 0 && physH > 0 {
@@ -778,14 +805,15 @@ func (a *App) registerPrimaryWindow(platWindow platform.PlatformWindow) {
 	a.windowManager = newWindowManager()
 	internalID := a.windowManager.allocate()
 	a.primaryWindow = &Window{
-		id:         internalID,
-		platformID: platWindow.ID(),
-		config:     a.config,
-		surface:    a.renderer.primary,
-		platWindow: a.platWindow,
-		onDraw:     a.onDraw,
-		onResize:   a.onResize,
-		visible:    true,
+		id:              internalID,
+		platformID:      platWindow.ID(),
+		config:          a.config,
+		surface:         a.renderer.primary,
+		platWindow:      a.platWindow,
+		onDraw:          a.onDraw,
+		onResize:        a.onResize,
+		headerAlignment: a.config.HeaderAlignment,
+		visible:         true,
 	}
 	a.primaryPlatformID = platWindow.ID()
 	a.windowManager.add(a.primaryWindow)
@@ -923,6 +951,12 @@ func (a *App) modalFrameTick() {
 		a.renderLoop.RequestResize(uint32(width), uint32(height)) //nolint:gosec // G115: validated positive
 	}
 
+	// Resize secondary window swapchains to match their current physical size.
+	// During modal drag/resize on a secondary window, WM_SIZE events are
+	// suppressed and processEventsMultiThread doesn't run, so we handle
+	// swapchain updates here. resize() is a no-op when dimensions are unchanged.
+	a.resizeSecondaryWindowsDuringModal()
+
 	// Render frame on render thread (blocks until complete).
 	a.renderFrameMultiThread()
 
@@ -930,6 +964,47 @@ func (a *App) modalFrameTick() {
 	// This ensures our frame and the DWM window border update
 	// appear in the same composition cycle, reducing resize lag.
 	a.platWindow.SyncFrame()
+}
+
+// resizeSecondaryWindowsDuringModal resizes swapchains for secondary windows
+// while a Win32 modal drag/resize loop is active. During the modal loop,
+// WM_SIZE events are suppressed and processEventsMultiThread doesn't run, so
+// secondary swapchains must be updated here instead.
+func (a *App) resizeSecondaryWindowsDuringModal() {
+	if a.windowManager == nil || a.renderer == nil {
+		return
+	}
+
+	type pendingResize struct {
+		ws   *RenderTarget
+		w, h int
+	}
+
+	a.windowManager.mu.RLock()
+	resizes := make([]pendingResize, 0, len(a.windowManager.order))
+	for _, id := range a.windowManager.order {
+		win := a.windowManager.windows[id]
+		if win == nil || win.platWindow == nil || win.surface == nil {
+			continue
+		}
+		if win == a.primaryWindow {
+			continue // primary handled by RequestResize / ConsumePendingResize
+		}
+		pw, ph := win.platWindow.PhysicalSize()
+		if pw > 0 && ph > 0 {
+			resizes = append(resizes, pendingResize{win.surface, pw, ph})
+		}
+	}
+	a.windowManager.mu.RUnlock()
+
+	if len(resizes) == 0 {
+		return
+	}
+	a.renderLoop.RunOnRenderThreadVoid(func() {
+		for _, r := range resizes {
+			r.ws.resize(r.w, r.h, a.renderer.device, a.renderer.adapter)
+		}
+	})
 }
 
 // SetAppName sets the name of the application.

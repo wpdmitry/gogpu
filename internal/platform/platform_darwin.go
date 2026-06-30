@@ -192,17 +192,51 @@ func (p *darwinPlatform) PollEvents() Event {
 // WaitEvents blocks until at least one OS event is available, then processes
 // all pending events. Uses [NSApp nextEventMatchingMask:untilDate:inMode:dequeue:]
 // with distantFuture, which blocks at kernel level via mach_msg for 0% CPU idle.
+//
+// Each NSEvent is routed to the darwinWindow that owns it via [NSEvent window].
+// This ensures pointer coordinates and event WindowIDs are attributed to the
+// correct window even when a non-key window receives input. Events without an
+// associated NSWindow (key events, system events) fall back to the key window.
 func (p *darwinPlatform) WaitEvents() {
-	w := p.primary
-	w.eventMu.Lock()
-	defer w.eventMu.Unlock()
+	p.mu.RLock()
+	keyWin := p.primary
+	for _, w := range p.windows {
+		if w.window != nil && w != p.primary && w.window.IsKeyWindow() {
+			keyWin = w
+			break
+		}
+	}
+	// Snapshot the window list for routing — avoids holding mu during dispatch.
+	wins := make([]*darwinWindow, len(p.windows))
+	copy(wins, p.windows)
+	p.mu.RUnlock()
 
-	if p.app != nil {
-		p.app.WaitEventsWithHandler(w.handleEvent)
+	// Route each event to the window it came from; fall back to keyWin for
+	// events that carry no NSWindow (e.g. keyboard, mouse-exited-screen).
+	routingHandler := func(event darwin.ID, eventType darwin.NSEventType) bool {
+		target := keyWin
+		if nsWin := darwin.GetEventWindow(event); !nsWin.IsNil() {
+			for _, w := range wins {
+				if w.window != nil && w.window.NSID() == nsWin {
+					target = w
+					break
+				}
+			}
+		}
+		target.eventMu.Lock()
+		result := target.handleEvent(event, eventType)
+		target.eventMu.Unlock()
+		return result
 	}
 
-	// Check for resize after processing events
-	w.checkResize()
+	if p.app != nil {
+		p.app.WaitEventsWithHandler(routingHandler)
+	}
+
+	// Check for resize after all events have been processed.
+	keyWin.eventMu.Lock()
+	keyWin.checkResize()
+	keyWin.eventMu.Unlock()
 }
 
 // WakeUp unblocks WaitEvents from any goroutine by posting a synthetic
@@ -293,7 +327,33 @@ func (dw *darwinPlatformWindow) ShouldClose() bool {
 	return false
 }
 
-func (dw *darwinPlatformWindow) InSizeMove() bool { return false }
+// InSizeMove returns true while the user is dragging a resize handle.
+// Mirrors the Win32 WM_ENTERSIZEMOVE / WM_EXITSIZEMOVE semantics: when true,
+// the app-level event loop suppresses resize events so the GPU surface is not
+// reconfigured on every mouse-move tick. A final resize fires on release.
+func (dw *darwinPlatformWindow) InSizeMove() bool {
+	if dw.window != nil {
+		return dw.window.InLiveResize()
+	}
+	return false
+}
+
+// SetLiveResizeHook implements platform.LiveResizeRenderer for macOS.
+// The hook is invoked on every windowDidResize: notification so the app layer
+// can reconfigure the GPU surface and render a frame during live resize.
+func (dw *darwinPlatformWindow) SetLiveResizeHook(fn func()) {
+	if dw.window != nil {
+		dw.window.SetLiveResizeHook(fn)
+	}
+}
+
+// SetHeaderAlignment implements platform.HeaderAligner for macOS.
+func (dw *darwinPlatformWindow) SetHeaderAlignment(alignment int) {
+	if dw.window != nil {
+		dw.window.SetHeaderAlignment(alignment)
+	}
+}
+
 func (dw *darwinPlatformWindow) SetTitle(title string) {
 	if dw.window != nil {
 		dw.window.SetTitle(title)
@@ -521,6 +581,7 @@ func (w *darwinWindow) pollEvents(app *darwin.Application) Event {
 			w.physW = newPhysW
 			w.physH = newPhysH
 			w.events.Push(Event{
+				WindowID:       w.id,
 				Type:           EventResize,
 				Width:          newWidth,
 				Height:         newHeight,
@@ -539,7 +600,7 @@ func (w *darwinWindow) pollEvents(app *darwin.Application) Event {
 			w.focusInited = true
 		} else if isKey != w.lastKeyWindow {
 			w.lastKeyWindow = isKey
-			w.events.Push(Event{Type: EventFocus, Focused: isKey})
+			w.events.Push(Event{WindowID: w.id, Type: EventFocus, Focused: isKey})
 		}
 	}
 
@@ -747,13 +808,13 @@ func (w *darwinWindow) dispatchPointerEvent(ev gpucontext.PointerEvent) {
 	default:
 		evType = EventPointerMove
 	}
-	w.events.Push(Event{Type: evType, Pointer: ev})
+	w.events.Push(Event{WindowID: w.id, Type: evType, Pointer: ev})
 }
 
 // dispatchScrollEvent pushes a scroll event to the event queue.
 // Called from handleEvent with w.eventMu held.
 func (w *darwinWindow) dispatchScrollEvent(ev gpucontext.ScrollEvent) {
-	w.events.Push(Event{Type: EventScroll, Scroll: ev})
+	w.events.Push(Event{WindowID: w.id, Type: EventScroll, Scroll: ev})
 }
 
 // dispatchKeyEvent pushes a keyboard event to the event queue.
@@ -763,7 +824,7 @@ func (w *darwinWindow) dispatchKeyEvent(key gpucontext.Key, mods gpucontext.Modi
 	if !pressed {
 		evType = EventKeyUp
 	}
-	w.events.Push(Event{Type: evType, Key: key, Mods: mods})
+	w.events.Push(Event{WindowID: w.id, Type: evType, Key: key, Mods: mods})
 }
 
 // dispatchCharFromEvent extracts characters from an NSEvent and dispatches them.
@@ -807,7 +868,7 @@ func (w *darwinWindow) dispatchCharFromEvent(event darwin.ID) {
 			continue
 		}
 		if r >= 32 && r != 127 {
-			w.events.Push(Event{Type: EventChar, Char: r})
+			w.events.Push(Event{WindowID: w.id, Type: EventChar, Char: r})
 		}
 		i += size
 	}
@@ -885,6 +946,7 @@ func (w *darwinWindow) checkResize() {
 		w.physH = newPhysH
 
 		w.queueEvent(Event{
+			WindowID:       w.id,
 			Type:           EventResize,
 			Width:          newWidth,
 			Height:         newHeight,

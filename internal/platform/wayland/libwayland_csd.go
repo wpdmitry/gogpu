@@ -167,7 +167,6 @@ func (h *LibwaylandHandle) SetupCSD(subcompName, subcompVersion, shmName, shmVer
 	h.csdPainter = painter
 	h.csdState = state
 	h.onCSDClose = onClose
-	csdCallbackHandle = h
 
 	// Setup pointer input for CSD hit-testing
 	if err := h.setupCSDPointer(seatName, seatVersion); err != nil {
@@ -186,6 +185,16 @@ func (h *LibwaylandHandle) SetupCSD(subcompName, subcompVersion, shmName, shmVer
 // CSDActive returns true if client-side decorations are active.
 func (h *LibwaylandHandle) CSDActive() bool {
 	return h.csdActive
+}
+
+// SetCSDTitleAlignment sets the title text alignment (0=left, 1=center, 2=right)
+// and triggers a CSD repaint. No-op when CSD is not active.
+func (h *LibwaylandHandle) SetCSDTitleAlignment(alignment int) {
+	if !h.csdActive {
+		return
+	}
+	h.csdState.TitleAlignment = alignment
+	h.repaintCSDTitleBar()
 }
 
 // IsMaximized returns true if the window is currently maximized.
@@ -328,9 +337,11 @@ func (h *LibwaylandHandle) setupCSDPointer(seatName, seatVersion uint32) error {
 	ptrQueueArgs := [2]unsafe.Pointer{unsafe.Pointer(&pointer), unsafe.Pointer(&queue)}
 	ffi.CallFunction(&h.cifSetQueue, h.fnProxySetQueue, nil, ptrQueueArgs[:])
 
-	// Add pointer listener (9 events)
+	// Add pointer listener (9 events). Pass h as data so each callback can
+	// identify which LibwaylandHandle to update — this avoids the single global
+	// and allows multiple concurrent CSD instances (primary + secondary windows).
 	initCSDPointerListeners()
-	if err := h.addListener(pointer, uintptr(unsafe.Pointer(&csdPointerListener[0]))); err != nil {
+	if err := h.addListenerWithData(pointer, uintptr(unsafe.Pointer(&csdPointerListener[0])), uintptr(unsafe.Pointer(h))); err != nil {
 		return fmt.Errorf("add pointer listener: %w", err)
 	}
 
@@ -346,7 +357,6 @@ func (h *LibwaylandHandle) setupCSDPointer(seatName, seatVersion uint32) error {
 var (
 	csdPointerListener [9]uintptr // 9 wl_pointer events
 	csdListenersOnce   sync.Once
-	csdCallbackHandle  *LibwaylandHandle // global ref for callbacks
 )
 
 func initCSDPointerListeners() {
@@ -364,8 +374,8 @@ func initCSDPointerListeners() {
 }
 
 // csdPointerEnterCb: void(data, wl_pointer, serial, surface, sx_fixed, sy_fixed)
-func csdPointerEnterCb(data, pointer, serial, surface, sxFixed, syFixed uintptr) {
-	h := csdCallbackHandle
+func csdPointerEnterCb(data unsafe.Pointer, pointer, serial, surface, sxFixed, syFixed uintptr) {
+	h := (*LibwaylandHandle)(data)
 	if h == nil {
 		return
 	}
@@ -377,8 +387,8 @@ func csdPointerEnterCb(data, pointer, serial, surface, sxFixed, syFixed uintptr)
 }
 
 // csdPointerLeaveCb: void(data, wl_pointer, serial, surface)
-func csdPointerLeaveCb(data, pointer, serial, surface uintptr) {
-	h := csdCallbackHandle
+func csdPointerLeaveCb(data unsafe.Pointer, pointer, serial, surface uintptr) {
+	h := (*LibwaylandHandle)(data)
 	if h == nil {
 		return
 	}
@@ -392,8 +402,8 @@ func csdPointerLeaveCb(data, pointer, serial, surface uintptr) {
 }
 
 // csdPointerMotionCb: void(data, wl_pointer, time, sx_fixed, sy_fixed)
-func csdPointerMotionCb(data, pointer, time, sxFixed, syFixed uintptr) {
-	h := csdCallbackHandle
+func csdPointerMotionCb(data unsafe.Pointer, pointer, time, sxFixed, syFixed uintptr) {
+	h := (*LibwaylandHandle)(data)
 	if h == nil {
 		return
 	}
@@ -403,8 +413,8 @@ func csdPointerMotionCb(data, pointer, time, sxFixed, syFixed uintptr) {
 }
 
 // csdPointerButtonCb: void(data, wl_pointer, serial, time, button, state)
-func csdPointerButtonCb(data, pointer, serial, time, button, state uintptr) {
-	h := csdCallbackHandle
+func csdPointerButtonCb(data unsafe.Pointer, pointer, serial, time, button, state uintptr) {
+	h := (*LibwaylandHandle)(data)
 	if h == nil {
 		return
 	}

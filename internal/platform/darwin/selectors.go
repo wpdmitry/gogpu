@@ -61,6 +61,13 @@ var selectors struct {
 	setCollectionBehavior                    SEL
 	windowShouldClose                        SEL
 	windowDidChangeScreen                    SEL
+	windowWillStartLiveResize                SEL
+	windowDidEndLiveResize                   SEL
+	windowDidResize                          SEL
+
+	// NSWindow titlebar transparency / title visibility
+	setTitlebarAppearsTransparent SEL
+	setTitleVisibility            SEL
 
 	// NSView - View management
 	setWantsLayer   SEL
@@ -71,6 +78,31 @@ var selectors struct {
 	setBounds       SEL
 	setNeedsDisplay SEL
 
+	// NSView - view hierarchy manipulation
+	superview                      SEL
+	addSubview                     SEL
+	addSubviewPositionedRelativeTo SEL
+	removeFromSuperview            SEL
+
+	// NSWindow - button access
+	standardWindowButton SEL
+
+	// NSTextField / NSControl
+	initWithFrame      SEL
+	setEditable        SEL
+	setBezeled         SEL
+	setDrawsBackground SEL
+	setAlignment       SEL
+	setStringValue     SEL
+	setTextColor       SEL
+	setFont            SEL
+
+	// NSFont class methods
+	titleBarFontOfSize SEL
+
+	// NSColor class methods
+	labelColor SEL
+
 	// CALayer - Contents (for software blitting)
 	setContents SEL
 
@@ -78,6 +110,9 @@ var selectors struct {
 	mainScreen   SEL
 	screens      SEL
 	visibleFrame SEL
+
+	// NSEvent
+	eventWindow SEL // [NSEvent window] → NSWindow* (nil for window-less events)
 
 	// NSDate
 	distantPast   SEL
@@ -204,6 +239,9 @@ var classes struct {
 	NSPasteboard         Class
 	NSCursor             Class
 	NSWorkspace          Class
+	NSTextField          Class
+	NSColor              Class
+	NSFont               Class
 }
 
 // initSelectors registers all selectors used by the darwin package.
@@ -263,6 +301,11 @@ func initSelectors() {
 		selectors.setCollectionBehavior = RegisterSelector("setCollectionBehavior:")
 		selectors.windowShouldClose = RegisterSelector("windowShouldClose:")
 		selectors.windowDidChangeScreen = RegisterSelector("windowDidChangeScreen:")
+		selectors.windowWillStartLiveResize = RegisterSelector("windowWillStartLiveResize:")
+		selectors.windowDidEndLiveResize = RegisterSelector("windowDidEndLiveResize:")
+		selectors.windowDidResize = RegisterSelector("windowDidResize:")
+		selectors.setTitlebarAppearsTransparent = RegisterSelector("setTitlebarAppearsTransparent:")
+		selectors.setTitleVisibility = RegisterSelector("setTitleVisibility:")
 
 		// NSView
 		selectors.setWantsLayer = RegisterSelector("setWantsLayer:")
@@ -273,6 +316,31 @@ func initSelectors() {
 		selectors.setBounds = RegisterSelector("setBounds:")
 		selectors.setNeedsDisplay = RegisterSelector("setNeedsDisplay:")
 
+		// NSView - view hierarchy manipulation
+		selectors.superview = RegisterSelector("superview")
+		selectors.addSubview = RegisterSelector("addSubview:")
+		selectors.addSubviewPositionedRelativeTo = RegisterSelector("addSubview:positioned:relativeTo:")
+		selectors.removeFromSuperview = RegisterSelector("removeFromSuperview")
+
+		// NSWindow - button access
+		selectors.standardWindowButton = RegisterSelector("standardWindowButton:")
+
+		// NSTextField / NSControl
+		selectors.initWithFrame = RegisterSelector("initWithFrame:")
+		selectors.setEditable = RegisterSelector("setEditable:")
+		selectors.setBezeled = RegisterSelector("setBezeled:")
+		selectors.setDrawsBackground = RegisterSelector("setDrawsBackground:")
+		selectors.setAlignment = RegisterSelector("setAlignment:")
+		selectors.setStringValue = RegisterSelector("setStringValue:")
+		selectors.setTextColor = RegisterSelector("setTextColor:")
+		selectors.setFont = RegisterSelector("setFont:")
+
+		// NSFont class methods
+		selectors.titleBarFontOfSize = RegisterSelector("titleBarFontOfSize:")
+
+		// NSColor class methods
+		selectors.labelColor = RegisterSelector("labelColor")
+
 		// CALayer - Contents
 		selectors.setContents = RegisterSelector("setContents:")
 
@@ -280,6 +348,9 @@ func initSelectors() {
 		selectors.mainScreen = RegisterSelector("mainScreen")
 		selectors.screens = RegisterSelector("screens")
 		selectors.visibleFrame = RegisterSelector("visibleFrame")
+
+		// NSEvent
+		selectors.eventWindow = RegisterSelector("window")
 
 		// NSDate
 		selectors.distantPast = RegisterSelector("distantPast")
@@ -406,6 +477,9 @@ func initClasses() {
 		classes.NSPasteboard = GetClass("NSPasteboard")
 		classes.NSCursor = GetClass("NSCursor")
 		classes.NSWorkspace = GetClass("NSWorkspace")
+		classes.NSTextField = GetClass("NSTextField")
+		classes.NSColor = GetClass("NSColor")
+		classes.NSFont = GetClass("NSFont")
 	})
 }
 
