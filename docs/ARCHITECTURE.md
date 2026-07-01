@@ -258,6 +258,8 @@ naga (shader)              wgpu              go-webgpu/webgpu
 | `EventSource` | Input events (keyboard, mouse, scroll, IME) | gogpu.App |
 | `WindowProvider` | Window size, scale factor | gogpu.App |
 | `WindowChrome` | Frameless windows, fullscreen | gogpu.App |
+| `HeaderAligner` | Title bar alignment (Left/Center/Right) | macOS, Wayland CSD |
+| `LiveResizeRenderer` | Render during live resize | macOS |
 | `FrameGater` | Wayland frame callback gating (ADR-049) | waylandPlatformWindow |
 | `DisplayLocker` | Wayland display mutex for thread safety (ADR-041) | waylandPlatformWindow |
 
@@ -278,6 +280,7 @@ gogpu/
 ├── event_source.go     # gpucontext.EventSource adapter
 ├── resource_tracker.go  # ResourceTracker: automatic GPU resource cleanup (LIFO)
 ├── gpucontext_adapter.go # gpucontext.DeviceProvider adapter
+├── window_header.go    # HeaderAlignment API (Left/Center/Right)
 ├── gesture.go          # GestureRecognizer (Vello-style)
 ├── sound/              # Platform system sounds (winmm/NSSound/canberra)
 ├── gpu/

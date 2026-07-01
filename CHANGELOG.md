@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.2] - 2026-07-01
+
+### Added
+
+- **X11 window icon** (@samyfodil, #353) — `Config.WithIcon(image.Image)` sets the taskbar/decoration icon via EWMH `_NET_WM_ICON`. Converts any `image.Image` to CARDINAL/32 ARGB wire format with correct un-premultiplication. No-op on Windows/macOS (icons come from app resources). Extracted `applyWindowProperties()` from `Init()` for maintainability.
+
 ## [0.43.1] - 2026-06-30
 
 ### Added

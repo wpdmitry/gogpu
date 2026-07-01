@@ -25,7 +25,7 @@ Our goal is to become the **reference graphics ecosystem** for Go — comparable
 
 ---
 
-## Current State: v0.43.0
+## Current State: v0.43.2
 
 ✅ **Production-ready** with full feature set:
 - **CSD maximize/fullscreen geometry** (#300) — 5 bugs fixed (enterprise research: GTK4, winit/SCTK, SDL3/libdecor). Negative offset geometry model, fullscreen state parsing, decoration lifecycle.
@@ -44,6 +44,7 @@ Our goal is to become the **reference graphics ecosystem** for Go — comparable
 - **macOS native window tabbing** — `Config.WithTabbingMode()` + `WithTabbingIdentifier()` (@lkmavi)
 - **Runtime fullscreen** — `App.SetFullscreen(bool)`, `App.ToggleFullscreen()` on all platforms (ADR-018)
 - **Multi-window** — `App.NewWindow()` creates additional windows with shared GPU device (ADR-010)
+- **X11 window icon** — `Config.WithIcon(image.Image)` via EWMH `_NET_WM_ICON` (@samyfodil)
 - **Damage-aware presentation** — `Context.SetDamageRects()` passes dirty regions to compositor (ADR-013)
 - **Triple-backend WebGPU** — Pure Go / Rust FFI / Browser WASM via build tags (ADR-038)
 - **Native file dialogs** — macOS NSPanel, Windows COM, Linux D-Bus + zenity/kdialog (ADR-036, @lkmavi)
@@ -79,6 +80,9 @@ Our goal is to become the **reference graphics ecosystem** for Go — comparable
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **v0.43.2** | 2026-07-01 | **X11 window icon** (@samyfodil) — `Config.WithIcon(image.Image)` via EWMH `_NET_WM_ICON`. ARGB encoding with un-premultiplication. |
+| **v0.43.1** | 2026-06-30 | **Header alignment + multi-window fixes** (@lkmavi) — `HeaderAlignment` API, macOS live resize, macOS/Wayland/Windows multi-window event routing and CSD fixes |
+| **v0.43.0** | 2026-06-29 | **Event-driven rendering by default** — `DefaultConfig().ContinuousRender: false` (winit 0.29 pattern). 0% CPU when idle. |
 | **v0.42.11** | 2026-06-28 | **Golden tests + RenderToImage** (@lkmavi) — headless GPU rendering, 9 example scenes, pixel-by-pixel comparison |
 | **v0.42.10** | 2026-06-28 | **RG16 bug fix** — migrate to gputypes.BlockCopySize (87 formats, Rust parity). deps: gputypes v0.5.1, wgpu v0.30.7 |
 | **v0.42.9** | 2026-06-28 | **Wayland frame callback gating** (ui#152, BUG-WL-006) — `wl_surface.frame` 3-state machine (winit pattern) via C libwayland FFI. Fixes CSD desync during animation. ADR-049. |
