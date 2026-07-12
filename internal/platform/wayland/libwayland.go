@@ -49,6 +49,16 @@ type LibwaylandHandle struct {
 	decorManager  uintptr // zxdg_decoration_manager_v1* proxy
 	toplevelDecor uintptr // zxdg_toplevel_decoration_v1* proxy
 
+	// Fractional scale and viewporter objects (optional).
+	fractionalScaleMgr uintptr
+	fractionalScaleObj uintptr
+	viewporter         uintptr
+	viewport           uintptr
+	viewportDestW      int32
+	viewportDestH      int32
+	scaleMu            sync.Mutex
+	fractionalScale    float64
+
 	// Function symbols
 	fnDisplayConnect   unsafe.Pointer
 	fnDisplayDisconn   unsafe.Pointer
@@ -415,6 +425,32 @@ func (h *LibwaylandHandle) Close() {
 	if h.decorManager != 0 {
 		h.proxyDestroy(h.decorManager)
 		h.decorManager = 0
+	}
+
+	if h.viewport != 0 {
+		h.marshalVoid(h.viewport, 0) // wp_viewport::destroy (opcode 0)
+		h.proxyDestroy(h.viewport)
+		h.viewport = 0
+		h.viewportDestW = 0
+		h.viewportDestH = 0
+	}
+	if h.viewporter != 0 {
+		h.marshalVoid(h.viewporter, 0) // wp_viewporter::destroy (opcode 0)
+		h.proxyDestroy(h.viewporter)
+		h.viewporter = 0
+	}
+	if h.fractionalScaleObj != 0 {
+		h.marshalVoid(h.fractionalScaleObj, 0) // wp_fractional_scale_v1::destroy (opcode 0)
+		fractionalHandlesMu.Lock()
+		delete(fractionalHandles, h.fractionalScaleObj)
+		fractionalHandlesMu.Unlock()
+		h.proxyDestroy(h.fractionalScaleObj)
+		h.fractionalScaleObj = 0
+	}
+	if h.fractionalScaleMgr != 0 {
+		h.marshalVoid(h.fractionalScaleMgr, 0) // wp_fractional_scale_manager_v1::destroy (opcode 0)
+		h.proxyDestroy(h.fractionalScaleMgr)
+		h.fractionalScaleMgr = 0
 	}
 
 	// Destroy xdg objects (reverse order: toplevel → surface → wm_base)
