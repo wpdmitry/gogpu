@@ -956,8 +956,15 @@ func (w *darwinWindow) checkResize() {
 	if w.window == nil {
 		return
 	}
-	// During live resize, defer GPU surface reconfiguration until the user
-	// releases the mouse (windowDidEndLiveResize → WakeEventLoop → here).
+	// Always refresh the cached logical size, even mid-drag: it's a cheap
+	// NSView bounds read (no GPU work) and callers such as Window.Size()/
+	// LogicalSize() poll it every frame to decide whether to re-layout.
+	w.window.UpdateSize()
+
+	// During live resize, defer GPU surface reconfiguration / resize-event
+	// dispatch until the user releases the mouse (windowDidEndLiveResize →
+	// WakeEventLoop → here). The live-resize render hook keeps the surface
+	// itself in sync with the physical size in the meantime.
 	if w.window.InLiveResize() {
 		return
 	}
@@ -965,7 +972,6 @@ func (w *darwinWindow) checkResize() {
 	oldWidth, oldHeight := w.config.Width, w.config.Height
 	oldPhysW, oldPhysH := w.physW, w.physH
 
-	w.window.UpdateSize()
 	newWidth, newHeight := w.window.Size()
 	newPhysW, newPhysH := w.window.FramebufferSize()
 
