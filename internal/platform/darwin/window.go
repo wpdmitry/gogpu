@@ -428,6 +428,28 @@ func (w *Window) UpdateSize() {
 	w.height = int(bounds.Size.Height)
 }
 
+// TryUpdateSize behaves like UpdateSize but never blocks: if w.mu is already
+// held it returns false without updating the cache. Safe to call from the
+// windowDidResize: delegate callback, which can fire reentrantly from inside
+// a Window method (SetSize, Zoom, ToggleFullScreen, ...) that holds w.mu
+// across a synchronous AppKit call known to trigger windowDidResize: before
+// returning. On contention the cache is simply refreshed on the next tick.
+func (w *Window) TryUpdateSize() bool {
+	if !w.mu.TryLock() {
+		return false
+	}
+	defer w.mu.Unlock()
+
+	if w.contentView.IsNil() {
+		return false
+	}
+
+	bounds := w.contentView.GetRect(selectors.bounds)
+	w.width = int(bounds.Size.Width)
+	w.height = int(bounds.Size.Height)
+	return true
+}
+
 // FramebufferSize returns the GPU framebuffer size in physical device pixels.
 // On Retina displays this is LogicalSize * BackingScaleFactor.
 func (w *Window) FramebufferSize() (width, height int) {

@@ -1008,29 +1008,49 @@ func TestDarwinGogpuWindowSurfaceStress(t *testing.T) {
 	})
 }
 
-// TestDarwinUpdateSizeDuringLiveResize verifies the premise behind checkResize's
-// live-resize fix: Window.UpdateSize() reads the live contentView bounds from
-// AppKit regardless of InLiveResize() state. It does not exercise checkResize
-// itself (that lives in the platform package and needs a full darwinWindow),
-// but confirms UpdateSize() has no InLiveResize-gated staleness of its own.
+// TestDarwinSizeAutoUpdatesDuringLiveResize is a regression test for the
+// live-resize reflow bug: checkResize() (which refreshes the cached logical
+// size) is only reached from the outer event loop (WaitEvents/pollEvents),
+// which AppKit's live-resize modal loop blocks for the whole drag. The
+// per-tick path during a drag is windowDidResize: (didResizeIMP in
+// windowdelegate.go), which must itself keep Window.Size()/LogicalSize()
+// fresh via TryUpdateSize() — otherwise the cache stays frozen at the
+// pre-drag size until the mouse is released.
 //
 // The frame is changed via a raw setFrame:display: objc call rather than
 // Window.SetSize()/Zoom(): those hold Window's internal mutex across the
-// synchronous AppKit call, which re-enters via windowDidResize: ->
-// liveResizeHookValue() and self-deadlocks once InLiveResize() is true. That
-// reentrancy is only reachable from a synthetic test like this one — AppKit's
-// real live-resize modal loop blocks the outer event loop, so no application
-// code can call those setters mid-drag in practice — but it still means the
-// frame change here must happen before StartLiveResize(), not after.
-func TestDarwinUpdateSizeDuringLiveResize(t *testing.T) {
+// synchronous AppKit call, which can re-enter didResizeIMP and deadlock on
+// that same non-reentrant mutex. That reentrancy is only reachable from a
+// synthetic test like this one (AppKit's real live-resize modal loop blocks
+// the outer event loop, so application code can't call those setters
+// mid-drag in practice) — it's exactly why the production fix calls
+// TryUpdateSize/TryLock rather than UpdateSize/Lock from the delegate.
+//
+// Everything that can call t.Fatalf/t.Skip runs outside runOnMainThread's
+// closure: FailNow()/SkipNow() call runtime.Goexit(), which — if triggered
+// inside that closure — terminates the shared main-thread executor goroutine
+// (see TestMain) and wedges every later test that also uses runOnMainThread
+// for the rest of the process.
+func TestDarwinSizeAutoUpdatesDuringLiveResize(t *testing.T) {
 	if runtime.GOARCH != "arm64" {
 		t.Skip("requires arm64")
 	}
 
+	rt := loadObjcRuntime(t)
+	selSetFrameDisplay := rt.sel(t, "setFrame:display:")
+
+	var (
+		initErr, newWindowErr error
+		beforeW, beforeH      int
+		actualW, actualH      int
+		gotW, gotH            int
+		inLiveResize          bool
+	)
+
 	runOnMainThread(t, func() {
 		app := platformdarwin.GetApplication()
-		if err := app.Init(); err != nil {
-			t.Fatalf("Application.Init failed: %v", err)
+		if initErr = app.Init(); initErr != nil {
+			return
 		}
 		defer app.Destroy()
 
@@ -1040,16 +1060,21 @@ func TestDarwinUpdateSizeDuringLiveResize(t *testing.T) {
 			Height:    300,
 			Resizable: true,
 		}
-		w, err := platformdarwin.NewWindow(config)
-		w = must(t, "NewWindow", w, err)
+		var w *platformdarwin.Window
+		w, newWindowErr = platformdarwin.NewWindow(config)
+		if newWindowErr != nil {
+			return
+		}
 		defer w.Destroy()
 
 		w.Show()
 		w.UpdateSize()
-		beforeW, beforeH := w.Size()
+		beforeW, beforeH = w.Size()
 
-		rt := loadObjcRuntime(t)
-		selSetFrameDisplay := rt.sel(t, "setFrame:display:")
+		w.StartLiveResize()
+		defer w.EndLiveResize()
+		inLiveResize = w.InLiveResize()
+
 		frame := w.Frame()
 		newFrame := nsRect{
 			Origin: nsPoint{X: frame.Origin.X, Y: frame.Origin.Y},
@@ -1058,27 +1083,29 @@ func TestDarwinUpdateSizeDuringLiveResize(t *testing.T) {
 		objcCallVoid(t, rt, uintptr(w.NSWindow()), selSetFrameDisplay, objcArgRect(newFrame), objcArgBool(true))
 
 		actual := w.ContentRect()
-		actualW, actualH := int(actual.Size.Width), int(actual.Size.Height)
-		if actualW == beforeW && actualH == beforeH {
-			t.Skip("frame change did not affect content bounds; cannot exercise divergence")
-		}
+		actualW, actualH = int(actual.Size.Width), int(actual.Size.Height)
 
-		if gotW, gotH := w.Size(); gotW != beforeW || gotH != beforeH {
-			t.Fatalf("cache changed without UpdateSize(): got %dx%d, want unchanged %dx%d", gotW, gotH, beforeW, beforeH)
-		}
-
-		w.StartLiveResize()
-		defer w.EndLiveResize()
-		if !w.InLiveResize() {
-			t.Fatal("expected InLiveResize() to be true after StartLiveResize()")
-		}
-
-		w.UpdateSize()
-
-		if gotW, gotH := w.Size(); gotW != actualW || gotH != actualH {
-			t.Fatalf("UpdateSize() during live resize: got %dx%d, want live bounds %dx%d", gotW, gotH, actualW, actualH)
-		}
+		// No manual UpdateSize()/TryUpdateSize() call here: production code
+		// (didResizeIMP) must have already refreshed the cache synchronously
+		// while handling the windowDidResize: notification triggered above.
+		gotW, gotH = w.Size()
 	})
+
+	if initErr != nil {
+		t.Fatalf("Application.Init failed: %v", initErr)
+	}
+	if newWindowErr != nil {
+		t.Fatalf("NewWindow failed: %v", newWindowErr)
+	}
+	if !inLiveResize {
+		t.Fatal("expected InLiveResize() to be true after StartLiveResize()")
+	}
+	if actualW == beforeW && actualH == beforeH {
+		t.Skip("frame change did not affect content bounds; cannot exercise divergence")
+	}
+	if gotW != actualW || gotH != actualH {
+		t.Fatalf("cache not auto-updated during live resize: got %dx%d, want live bounds %dx%d (before drag: %dx%d)", gotW, gotH, actualW, actualH, beforeW, beforeH)
+	}
 }
 
 // This isolates the Application Init/Destroy lifecycle without windows/surfaces.

@@ -76,15 +76,29 @@ func registerWindowDelegateClass() (Class, error) {
 	ClassAddMethod(cls, selectors.windowDidChangeScreen, screenChangedIMP, "v@:@")
 
 	// windowDidResize: fires after each resize step, including during AppKit's
-	// live-resize modal loop (inside sendEvent:) where our outer event loop is
-	// blocked. Only invoke the hook while InLiveResize is true — this limits
-	// the render trigger to user-drag resize and avoids spurious calls during
-	// programmatic frame changes and window setup.
+	// live-resize modal loop (inside sendEvent:) where our outer event loop —
+	// and with it checkResize/UpdateSize — is blocked and does not run.
 	didResizeIMP := ffi.NewCallback(
 		func(self, sel, notification uintptr) uintptr {
-			if win := getWindowFromDelegate(ID(self)); win != nil && win.InLiveResize() {
-				if hook := win.liveResizeHookValue(); hook != nil {
-					hook()
+			if win := getWindowFromDelegate(ID(self)); win != nil {
+				// Keep the cached logical size fresh on every resize tick so
+				// Window.Size()/LogicalSize() never go stale mid-drag — hosts
+				// (e.g. gogpu/ui's Frame()) poll it every frame to decide
+				// whether to re-layout. TryUpdateSize (non-blocking) because
+				// this callback can fire reentrantly from inside a Window
+				// method that already holds w.mu across a synchronous AppKit
+				// call (SetSize/Zoom/ToggleFullScreen/...); on contention the
+				// cache is simply refreshed on the next tick.
+				win.TryUpdateSize()
+
+				// Only invoke the render hook while InLiveResize is true —
+				// this limits the render trigger to user-drag resize and
+				// avoids spurious calls during programmatic frame changes and
+				// window setup.
+				if win.InLiveResize() {
+					if hook := win.liveResizeHookValue(); hook != nil {
+						hook()
+					}
 				}
 			}
 			return 0
