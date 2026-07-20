@@ -1008,6 +1008,79 @@ func TestDarwinGogpuWindowSurfaceStress(t *testing.T) {
 	})
 }
 
+// TestDarwinUpdateSizeDuringLiveResize verifies the premise behind checkResize's
+// live-resize fix: Window.UpdateSize() reads the live contentView bounds from
+// AppKit regardless of InLiveResize() state. It does not exercise checkResize
+// itself (that lives in the platform package and needs a full darwinWindow),
+// but confirms UpdateSize() has no InLiveResize-gated staleness of its own.
+//
+// The frame is changed via a raw setFrame:display: objc call rather than
+// Window.SetSize()/Zoom(): those hold Window's internal mutex across the
+// synchronous AppKit call, which re-enters via windowDidResize: ->
+// liveResizeHookValue() and self-deadlocks once InLiveResize() is true. That
+// reentrancy is only reachable from a synthetic test like this one — AppKit's
+// real live-resize modal loop blocks the outer event loop, so no application
+// code can call those setters mid-drag in practice — but it still means the
+// frame change here must happen before StartLiveResize(), not after.
+func TestDarwinUpdateSizeDuringLiveResize(t *testing.T) {
+	if runtime.GOARCH != "arm64" {
+		t.Skip("requires arm64")
+	}
+
+	runOnMainThread(t, func() {
+		app := platformdarwin.GetApplication()
+		if err := app.Init(); err != nil {
+			t.Fatalf("Application.Init failed: %v", err)
+		}
+		defer app.Destroy()
+
+		config := platformdarwin.WindowConfig{
+			Title:     "gogpu",
+			Width:     400,
+			Height:    300,
+			Resizable: true,
+		}
+		w, err := platformdarwin.NewWindow(config)
+		w = must(t, "NewWindow", w, err)
+		defer w.Destroy()
+
+		w.Show()
+		w.UpdateSize()
+		beforeW, beforeH := w.Size()
+
+		rt := loadObjcRuntime(t)
+		selSetFrameDisplay := rt.sel(t, "setFrame:display:")
+		frame := w.Frame()
+		newFrame := nsRect{
+			Origin: nsPoint{X: frame.Origin.X, Y: frame.Origin.Y},
+			Size:   nsSize{Width: frame.Size.Width + 80, Height: frame.Size.Height + 60},
+		}
+		objcCallVoid(t, rt, uintptr(w.NSWindow()), selSetFrameDisplay, objcArgRect(newFrame), objcArgBool(true))
+
+		actual := w.ContentRect()
+		actualW, actualH := int(actual.Size.Width), int(actual.Size.Height)
+		if actualW == beforeW && actualH == beforeH {
+			t.Skip("frame change did not affect content bounds; cannot exercise divergence")
+		}
+
+		if gotW, gotH := w.Size(); gotW != beforeW || gotH != beforeH {
+			t.Fatalf("cache changed without UpdateSize(): got %dx%d, want unchanged %dx%d", gotW, gotH, beforeW, beforeH)
+		}
+
+		w.StartLiveResize()
+		defer w.EndLiveResize()
+		if !w.InLiveResize() {
+			t.Fatal("expected InLiveResize() to be true after StartLiveResize()")
+		}
+
+		w.UpdateSize()
+
+		if gotW, gotH := w.Size(); gotW != actualW || gotH != actualH {
+			t.Fatalf("UpdateSize() during live resize: got %dx%d, want live bounds %dx%d", gotW, gotH, actualW, actualH)
+		}
+	})
+}
+
 // This isolates the Application Init/Destroy lifecycle without windows/surfaces.
 // If this crashes, the NSAutoreleasePool or NSApplication path is unsafe by itself.
 func TestDarwinApplicationInitDestroyLoop(t *testing.T) {
